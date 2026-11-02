@@ -1,0 +1,56 @@
+## ---------- 本地/构建产物 ----------
+.gradle/
+.gradle-bootstrap/
+.kotlin/
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aar
+*.aab
+*.ap_
+*.dex
+*.class
+
+## ---------- IDE / 编辑器 ----------
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+.vscode/
+.fleet/
+*.hprof
+
+## ---------- 本机配置（含 SDK 路径 / 调试服务器地址） ----------
+local.properties
+gradle.properties.bak
+
+## ---------- JVM 崩溃日志与构建日志 ----------
+hs_err_pid*.log
+replay_pid*.log
+*.hprof
+build-output.log
+*.log
+!docs/**/*.log
+
+## ---------- 运行期临时文件 / 数据库（含路径拼接错误产生的怪文件） ----------
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+UsersjunvonAppDataLocalTemp*
+*.hprof
+
+## ---------- 系统垃圾 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+*.swp
+
+## ---------- 但 Markdown 文档一律纳入版本库（覆盖上面的 *.log 等无影响，属显式保险） ----------
+!*.md
+!**/*.md
