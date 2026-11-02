@@ -25,8 +25,12 @@ import com.example.helloworld.data.remote.PetFriendRequest
 import com.example.helloworld.data.remote.PetInteractRequest
 import com.example.helloworld.data.remote.PetPairDto
 import com.example.helloworld.data.remote.PetClaimRequest
+import com.example.helloworld.data.remote.PetShelfItem
+import com.example.helloworld.data.remote.PetActionDef
 import com.example.helloworld.data.remote.PetShopItem
 import com.example.helloworld.data.remote.PetSpeciesRequest
+import com.example.helloworld.data.remote.PetRenameRequest
+import com.example.helloworld.data.remote.PetBuyActionRequest
 import com.example.helloworld.data.remote.YinheImClient
 import com.example.helloworld.data.remote.PlaylistPayload
 import com.example.helloworld.data.remote.UserLibraryRequest
@@ -548,8 +552,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         libraryState = libraryState.copy(loading = true, error = null)
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val response = api.getLibrary()
-                val tracks = response.songs.values
+                // 服务器音乐库：所有用户收藏 + 歌单去重汇总（与 Web 共用 /api/server_library）
+                val response = api.getServerLibrary()
+                val tracks = response.items
                     .filter { it.mediaType != "video" }
                     .map { it.toUiTrack() }
                     .distinctBy { it.id }
@@ -1729,12 +1734,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 角色商店（价格/等级门槛），进精灵页时刷新 */
     val petShop = MutableStateFlow<List<PetShopItem>>(emptyList())
+    /** 当前等级的动作货架（随机生成、固定） */
+    val petShelf = MutableStateFlow<List<PetShelfItem>>(emptyList())
+    /** 全量动作目录（用于名称展示/过滤） */
+    val petActionCatalog = MutableStateFlow<List<PetActionDef>>(emptyList())
+    val petShopLevel = MutableStateFlow(1)
 
-    fun refreshPetShop() {
+    fun refreshPetShop(peer: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
             val t = AuthRepository.token() ?: return@launch
-            runCatching { api.petShop("Bearer $t") }
-                .onSuccess { resp -> petShop.value = resp.species }
+            runCatching { api.petShop("Bearer $t", peer) }
+                .onSuccess { resp ->
+                    petShop.value = resp.species
+                    petShelf.value = resp.shelf
+                    petActionCatalog.value = resp.actions
+                    petShopLevel.value = resp.level
+                }
         }
     }
 
@@ -1743,6 +1758,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val t = AuthRepository.token() ?: return@launch
             runCatching { api.petBuySpecies("Bearer $t", PetSpeciesRequest(peer, species)) }
+                .onSuccess { p ->
+                    pets.value = pets.value + (peer to p)
+                    refreshPetShop(peer)
+                    withContext(Dispatchers.Main) { onResult(null) }
+                }
+                .onFailure { withContext(Dispatchers.Main) { onResult(friendlyAuthError(it as Exception, register = false)) } }
+        }
+    }
+
+    /** 购买当前货架上的动作 */
+    fun petBuyAction(peer: String, actionId: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val t = AuthRepository.token() ?: return@launch
+            runCatching { api.petBuyAction("Bearer $t", PetBuyActionRequest(peer, actionId)) }
+                .onSuccess { p ->
+                    pets.value = pets.value + (peer to p)
+                    refreshPetShop(peer)
+                    withContext(Dispatchers.Main) { onResult(null) }
+                }
+                .onFailure { withContext(Dispatchers.Main) { onResult(friendlyAuthError(it as Exception, register = false)) } }
+        }
+    }
+
+    /** 给共养宠物改名 */
+    fun petRename(peer: String, name: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val t = AuthRepository.token() ?: return@launch
+            runCatching { api.petRename("Bearer $t", PetRenameRequest(peer, name)) }
                 .onSuccess { p ->
                     pets.value = pets.value + (peer to p)
                     withContext(Dispatchers.Main) { onResult(null) }
@@ -1755,7 +1798,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val t = AuthRepository.token() ?: return@launch
             runCatching { api.petSwitchSpecies("Bearer $t", PetSpeciesRequest(peer, species)) }
-                .onSuccess { p -> pets.value = pets.value + (peer to p) }
+                .onSuccess { p ->
+                    pets.value = pets.value + (peer to p)
+                    refreshPetShop(peer)
+                }
         }
     }
 

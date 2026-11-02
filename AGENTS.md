@@ -70,8 +70,9 @@ Compose 单 Activity 架构，音乐服务器是隔壁 `music_web`（接口前�
 - 键盘悬浮/间距 bug：AndroidManifest 的 activity 必须 android:windowSoftInputMode="adjustResize"，
   默认 adjustPan 会系统平移 + Compose imePadding 双重 padding，输入栏浮在键盘上方一倍距离。
 - FastAPI 裸 dict 参数默认当 query——收任意 JSON body 必须 `payload: dict = Body(...)`。
-- 首页数据链：/api/library 带 today_plays（服务端 daily_plays.json 按天累计保留 7 天，POST /plays
-  时 bump）；客户端排序=有封面(coverUrl)优先>今日次数>shuffle 稳定序，显示 50 + 查看更多；
+- 首页数据链：/api/server_library（所有用户收藏+歌单去重汇总，带 owner_count/play_count/today_plays；
+  旧 /api/library 仅作全量同步）。today_plays 来自服务端 daily_plays.json 按天累计保留 7 天，POST /plays
+  时 bump；客户端排序=有封面(coverUrl)优先>今日次数>shuffle 稳定序，显示 50 + 查看更多；
   大卡 heroTrack=今日有封面track按次数取首个，歌词 api.lyrics 拉前 4 句做轮换动效。
 - 反馈/日志：POST /api/feedback（feedback.jsonl）与 POST /api/logs（logs_upload/<user>_<ts>.log）
   均需登录；设置页「上报日志」把 YinheLogger 最近 300 行+音源统计上传。「检查更新」=比
@@ -95,13 +96,13 @@ Compose 单 Activity 架构，音乐服务器是隔壁 `music_web`（接口前�
   （客户端在 search/maybeReportPlay/toggleFavorite 添加/sendChat/shareTrackTo/一起听退出处调用
   reportPetEvent，累加到该用户所有 pair）。聊天页灰底渐变 #8A8F98→#6E747E（融合透明素材灰边）。
   设计文档 docs/pet-design.md，冒烟 tools/pet_smoke_test.py（PET_PORT 起服务后跑）。
-- **宠物素材服务器化（2026-11-01）**：角色/动画段不再依赖发版。服务端
-  `GET /pet/content/manifest`（config/pet_content/manifest.json，缺省内置 boy 清单）下发
-  characters[id]={name,fps,acts,clips}；`GET /pet/content/file/{character}/{act}` 返回该段
-  zip（内含 frames/frame_%04d.webp）。客户端 PetContentStore：宠物可见时 ensureCharacter
-  后台下载全部段解压到 filesDir/pet/，ready 记 SharedPreferences；PetAvatar 解码磁盘优先、
-  assets/pet/boy 兜底；PetEngine 的 clips/fps 由角色定义注入，互动行为池只收录 clips 齐全的
-  行为。新增角色 = 服务端放 zip+改 manifest（species id 与 character id 同名即自动绑定）。
+- **宠物素材服务器化（2026-11，manifest v3，全热更新）**：角色/动画/动作价格都不依赖发版。
+  `GET /pet/content/manifest` 下发 characters[id]={name,fps,roles,starter,behaviors,clips,packs}、
+  actions 目录、shop、shop_rotation_version；`GET /pet/content/file/{character}/{act}` 返回分片 zip。
+  动作商店：`GET /pet/shop?friend=`（当前等级随机货架 10/20/30/40 音符，落库后固定）、
+  `POST /pet/buy_action`、`PATCH /pet/name`。客户端 PetContentStore 按 pack 懒下载 + 进度 + 版本清缓存；
+  PetAnimationEngine 由 roles/behaviors/unlocked 驱动 idle/music/click/随机池/睡觉/事件，不再写死 clip 名；
+  帧走 PetFrameCache LRU。新增角色/动作 = 服务端放 zip + 改 manifest/actions，客户端兑换后按 pack 下载。
 - **试听剪辑检测（2026-11-01）**：部分音源返回 15s/30s/50s 试听片段。YinHeMediaService
   checkTruncatedStream：STATE_READY 且元数据时长≥90s、实际<60% 且<75s → blockUrl+标记源已试，
   重新走换源链找完整版；换源无更优时用回此前地址（不跳歌，防元数据时长不准误伤）。
@@ -110,7 +111,7 @@ Compose 单 Activity 架构，音乐服务器是隔壁 `music_web`（接口前�
 ## 数据流速查
 
 - 歌单/收藏同步：客户端权威，登录 pullSync 全量覆盖本地，任何变更 schedulePush 防抖 600ms 推全量。
-- 服务器"曲库"= library.json 元数据（不存音频）；播放计数 POST /api/plays（进度≥80% 每首一次）。
+- 服务器"曲库"= /api/server_library（所有用户收藏+歌单去重，不存音频）；播放计数 POST /api/plays（进度≥80% 每首一次）。
 - 缓存状态机：trackPlayStarted 标 DOWNLOADING，done = 缓存字节≥总字节（听完才 done；
   听一半切歌 = "已缓存 xx%" 部分缓存，UI 用 cacheProgress 显示百分比）。
 

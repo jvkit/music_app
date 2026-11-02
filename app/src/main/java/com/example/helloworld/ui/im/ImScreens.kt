@@ -624,7 +624,14 @@ private fun androidx.compose.foundation.layout.BoxScope.PetOverlay(
             modifier = Modifier.width(88.dp * 3 / 4).height(88.dp),
             contentAlignment = Alignment.TopCenter
         ) {
-            PetAvatar(species = pet.species, trigger = trigger, size = 88.dp, musicPlaying = musicPlaying, animate = true)
+            PetAvatar(
+                species = pet.species,
+                trigger = trigger,
+                size = 88.dp,
+                musicPlaying = musicPlaying,
+                animate = true,
+                unlockedActions = pet.actionUnlocks[pet.species].orEmpty().toSet()
+            )
             bubbleText?.let {
                 Box(
                     modifier = Modifier

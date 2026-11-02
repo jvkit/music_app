@@ -11,6 +11,9 @@ interface MusicApiService {
     @retrofit2.http.GET("library")
     suspend fun getLibrary(): LibraryDataResponse
 
+    @retrofit2.http.GET("server_library")
+    suspend fun getServerLibrary(): ServerLibraryResponse
+
     @retrofit2.http.GET("search")
     suspend fun search(
         @retrofit2.http.Query("query") query: String,
@@ -197,6 +200,18 @@ interface MusicApiService {
         @retrofit2.http.Body request: PetSpeciesRequest
     ): PetPairDto
 
+    @retrofit2.http.PATCH("pet/name")
+    suspend fun petRename(
+        @retrofit2.http.Header("Authorization") authorization: String,
+        @retrofit2.http.Body request: PetRenameRequest
+    ): PetPairDto
+
+    @retrofit2.http.POST("pet/buy_action")
+    suspend fun petBuyAction(
+        @retrofit2.http.Header("Authorization") authorization: String,
+        @retrofit2.http.Body request: PetBuyActionRequest
+    ): PetPairDto
+
     @retrofit2.http.POST("pet/event")
     suspend fun petEvent(
         @retrofit2.http.Header("Authorization") authorization: String,
@@ -205,7 +220,8 @@ interface MusicApiService {
 
     @retrofit2.http.GET("pet/shop")
     suspend fun petShop(
-        @retrofit2.http.Header("Authorization") authorization: String
+        @retrofit2.http.Header("Authorization") authorization: String,
+        @retrofit2.http.Query("friend") friend: String? = null
     ): PetShopResponse
 
     // ===================== 宠物素材内容（服务器下发） =====================
@@ -261,6 +277,7 @@ data class PetTaskDto(
 
 data class PetPairDto(
     val friend: String = "",
+    val name: String = "",
     val species: String = "default",
     @SerializedName("species_owned") val speciesOwned: List<String> = listOf("default"),
     val level: Int = 1,
@@ -270,6 +287,7 @@ data class PetPairDto(
     @SerializedName("flame_days") val flameDays: Int = 0,
     @SerializedName("flame_multiplier") val flameMultiplier: Float = 1f,
     @SerializedName("actions_unlocked") val actionsUnlocked: List<String> = listOf("idle"),
+    @SerializedName("action_unlocks") val actionUnlocks: Map<String, List<String>> = emptyMap(),
     @SerializedName("signin_today") val signinToday: Boolean = false,
     val tasks: List<PetTaskDto> = emptyList(),
     @SerializedName("feed_count") val feedCount: Int = 0,
@@ -287,6 +305,8 @@ data class PetClaimRequest(val friend: String, @SerializedName("task_id") val ta
 data class PetFeedRequest(val friend: String, val count: Int = 1)
 data class PetInteractRequest(val friend: String, val action: String)
 data class PetSpeciesRequest(val friend: String, val species: String)
+data class PetRenameRequest(val friend: String, val name: String)
+data class PetBuyActionRequest(val friend: String, @SerializedName("action_id") val actionId: String)
 data class PetEventRequest(val type: String, val count: Int = 1)
 
 data class PetShopItem(
@@ -296,28 +316,97 @@ data class PetShopItem(
     @SerializedName("level_required") val levelRequired: Int = 0
 )
 
+data class PetShelfItem(
+    val action: String = "",
+    val name: String = "",
+    val category: String = "",
+    val price: Int = 0,
+    val pack: String = "",
+    val sold: Boolean = false
+)
+
+data class PetActionDef(
+    val id: String = "",
+    val character: String = "",
+    val name: String = "",
+    val category: String = "",
+    val clip: String = "",
+    @SerializedName("min_level") val minLevel: Int = 1,
+    val pack: String = ""
+)
+
 data class PetShopResponse(
     val species: List<PetShopItem> = emptyList(),
-    val levels: Map<String, Int> = emptyMap()
+    val levels: Map<String, Int> = emptyMap(),
+    val friend: String? = null,
+    val level: Int = 1,
+    val notes: Int = 0,
+    @SerializedName("species_current") val speciesCurrent: String? = null,
+    val shelf: List<PetShelfItem> = emptyList(),
+    @SerializedName("action_unlocks") val actionUnlocks: List<String> = emptyList(),
+    val actions: List<PetActionDef> = emptyList(),
+    @SerializedName("rotation_version") val rotationVersion: Int = 1
 )
 
 /** 宠物素材清单（/pet/content/manifest）：角色 -> 动画段定义，新增角色无需发版 */
 data class PetClipDef(
     val act: Int = 1,
     val start: Int = 0,
-    val end: Int = 0
+    val end: Int = 0,
+    val fps: Float? = null,
+    val mode: String? = null
+)
+
+data class PetRoleSet(
+    val idle: List<String> = emptyList(),
+    val music: List<String> = emptyList(),
+    val click: List<String> = emptyList(),
+    val move: List<String> = emptyList(),
+    val turn: List<String> = emptyList(),
+    val drag: List<String> = emptyList(),
+    @SerializedName("sleep_start") val sleepStart: List<String> = emptyList(),
+    @SerializedName("sleep_loop") val sleepLoop: List<String> = emptyList(),
+    @SerializedName("sleep_end") val sleepEnd: List<String> = emptyList(),
+    val events: Map<String, List<String>> = emptyMap()
+)
+
+data class PetBehaviorCategory(
+    val id: String = "",
+    val weight: Int = 0,
+    val actions: List<String> = emptyList()
+)
+
+data class PetBehaviors(
+    val weights: Map<String, Int> = emptyMap(),
+    val categories: List<PetBehaviorCategory> = emptyList()
+)
+
+data class PetPackDef(
+    val id: String = "",
+    val name: String = "",
+    val acts: List<String> = emptyList(),
+    val size: Long = 0,
+    val sha256: String = "",
+    val frames: Int = 0
 )
 
 data class PetCharacterDef(
     val name: String = "",
     val fps: Float = 24f,
     val acts: List<String> = emptyList(),
-    val clips: Map<String, PetClipDef> = emptyMap()
+    val clips: Map<String, PetClipDef> = emptyMap(),
+    val roles: PetRoleSet = PetRoleSet(),
+    val starter: List<String> = emptyList(),
+    val behaviors: PetBehaviors = PetBehaviors(),
+    val builtin: Boolean = false,
+    val packs: List<PetPackDef> = emptyList()
 )
 
 data class PetContentManifestResponse(
     val version: Int = 1,
-    val characters: Map<String, PetCharacterDef> = emptyMap()
+    val characters: Map<String, PetCharacterDef> = emptyMap(),
+    val actions: List<PetActionDef> = emptyList(),
+    @SerializedName("shop_rotation_version") val shopRotationVersion: Int = 1
 )
 
 data class ListenStateRequest(

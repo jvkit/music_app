@@ -10,6 +10,7 @@ data class ApiTrack(
     val duration: Int? = null,
     val source: String,
     @SerializedName("source_url") val sourceUrl: String? = null,
+    @SerializedName("media_type") val mediaType: String? = null,
     val thumbnail: String? = null,
     @SerializedName("cover_url") val coverUrl: String? = null,
     val lyrics: String? = null,
@@ -47,6 +48,13 @@ data class SearchResponse(
     val tracks: List<ApiTrack>,
     val offset: Int,
     val limit: Int
+)
+
+/** /api/server_library：所有用户收藏 + 歌单去重汇总 */
+data class ServerLibraryResponse(
+    val items: List<ApiTrack> = emptyList(),
+    val total: Int = 0,
+    @SerializedName("today_plays") val todayPlays: Map<String, Int> = emptyMap()
 )
 
 data class LibraryDataResponse(
