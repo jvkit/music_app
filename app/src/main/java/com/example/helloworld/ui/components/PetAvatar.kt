@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -17,7 +18,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import com.example.helloworld.data.remote.PetCharacterDef
+import com.example.helloworld.data.remote.PetDisplayDef
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.android.awaitFrame
@@ -38,24 +41,34 @@ fun PetAvatar(
     externalEvent: String? = null,
     externalEventSeq: Long = 0,
     eventIndex: Int? = null,
+    /** 正在被拖拽：循环播放 roles.drag（无专属片段的角色回退到 move/turn） */
+    dragging: Boolean = false,
+    /**
+     * 是否应用 manifest 的 display 位置/缩放修正。
+     * 只给投喂页的大角色开：缩略图（商店/图鉴/列表）和聊天页小宠物按原始比例铺满即可，
+     * 套用大角色的缩小参数会变得极小。
+     */
+    applyDisplay: Boolean = false,
+    /** 图鉴预览：循环播放指定 clip（非空时忽略交互，持续循环） */
+    loopClip: String? = null,
 ) {
     val context = LocalContext.current
     var frame by remember { mutableStateOf<Bitmap?>(null) }
     var loadedKey by remember { mutableStateOf<String?>(null) }
     var decodedReq by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    // 按需下载状态：当前已请求下载的 act、下载协程
+    var requestedAct by remember { mutableIntStateOf(0) }
+    var actJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     val characterId = PetContentStore.characterIdFor(species)
     val character = PetContentStore.characterFor(species)
 
-    // 首次可见：恢复下载记录 + 只确保 starter 动作就绪
+    // 首次可见：只确保 starter 所需的包（core）
     LaunchedEffect(characterId) {
         PetContentStore.init(context)
         PetContentStore.ensureCharacter(context, characterId)
     }
-    // 已解锁动作（买过的包）按需下载
-    LaunchedEffect(characterId, unlockedActions) {
-        unlockedActions.forEach { clip -> PetContentStore.ensureClip(context, characterId, clip) }
-    }
+    // 注意：已解锁的动作不再批量预下载——按需在真正播放到该 act 时才下载（见下方帧循环）
 
     if (!animate) {
         LaunchedEffect(size, characterId) {
@@ -76,10 +89,19 @@ fun PetAvatar(
                 defaultFps = character.fps,
                 starter = character.starter.toSet(),
                 unlocked = unlockedActions,
+                sellable = PetContentStore.sellableClips(characterId),
             )
         }
+        // 图鉴预览：循环播放指定动作，退出预览时恢复待机
+        LaunchedEffect(loopClip) {
+            if (!loopClip.isNullOrBlank()) {
+                engine.playLoop(loopClip)
+            } else {
+                engine.setMusic(musicPlaying)
+            }
+        }
         LaunchedEffect(trigger) {
-            if (trigger > 0) engine.tap()
+            if (loopClip.isNullOrBlank() && trigger > 0) engine.tap()
         }
         LaunchedEffect(musicPlaying) {
             engine.setMusic(musicPlaying)
@@ -89,6 +111,16 @@ fun PetAvatar(
                 if (!engine.playAction(externalEvent)) {
                     engine.triggerEvent(externalEvent, eventIndex)
                 }
+            }
+        }
+        // 拖拽：起手播 drag 片段，松手回待机
+        LaunchedEffect(dragging) {
+            if (dragging) {
+                val dragClip = (character.roles.drag + character.roles.move + character.roles.turn)
+                    .firstOrNull { it in character.clips }
+                if (dragClip != null) engine.playAction(dragClip)
+            } else {
+                engine.setMusic(musicPlaying)
             }
         }
         // 主循环：时间轴推进 + 按需解码当前帧
@@ -109,6 +141,19 @@ fun PetAvatar(
                         frame = bmp
                     }
                 }
+                // 按需下载：当前播放的 act 未就绪时后台拉取（不预下载整角色，也不阻塞渲染）
+                if (req != null && req.first != requestedAct) {
+                    requestedAct = req.first
+                    val act = "act$requestedAct"
+                    if (!PetContentStore.isActReady(characterId, act)) {
+                        actJob?.cancel()
+                        actJob = kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                            PetContentStore.ensureAct(context, characterId, act)
+                            // 下载解压完成后重新解码当前帧
+                            withContext(Dispatchers.Main) { decodedReq = null }
+                        }
+                    }
+                }
             }
         }
     }
@@ -119,10 +164,20 @@ fun PetAvatar(
     ) {
         val b = bmp
         if (b != null && !b.isRecycled) {
+            // display 只作用于投喂页大角色；缩略图/聊天页小宠物按原始比例铺满
+            val d = if (applyDisplay) character.display else PetDisplayDef()
+            val s = d.scale.coerceIn(0.3f, 3f)
+            val w = this.size.width * s
+            val h = this.size.height * s
+            val dx = this.size.width * d.offsetX
+            val dy = this.size.height * d.offsetY
             drawImage(
                 image = b.asImageBitmap(),
-                dstOffset = androidx.compose.ui.unit.IntOffset.Zero,
-                dstSize = androidx.compose.ui.unit.IntSize(this.size.width.roundToInt(), this.size.height.roundToInt())
+                dstOffset = androidx.compose.ui.unit.IntOffset(
+                    ((this.size.width - w) / 2f + dx).roundToInt(),
+                    ((this.size.height - h) / 2f + dy).roundToInt(),
+                ),
+                dstSize = androidx.compose.ui.unit.IntSize(w.roundToInt(), h.roundToInt())
             )
         }
     }

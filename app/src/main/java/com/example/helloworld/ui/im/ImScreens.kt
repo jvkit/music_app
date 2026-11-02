@@ -551,6 +551,7 @@ private fun androidx.compose.foundation.layout.BoxScope.PetOverlay(
     // 松手时一次性提交布局位置
     var dragVisual by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
     var dragBase by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    var dragging by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -578,6 +579,7 @@ private fun androidx.compose.foundation.layout.BoxScope.PetOverlay(
                     onDragStart = {
                         dragBase = currentPosition
                         dragVisual = androidx.compose.ui.geometry.Offset.Zero
+                        dragging = true
                     },
                     onDrag = { change, dragAmount ->
                         change.consume()
@@ -589,9 +591,11 @@ private fun androidx.compose.foundation.layout.BoxScope.PetOverlay(
                         val ny = target.y.coerceIn(areaTop, (areaTop + areaHeight - petSizePx).coerceAtLeast(areaTop))
                         currentOnPositionChange(androidx.compose.ui.geometry.Offset(nx, ny))
                         dragVisual = androidx.compose.ui.geometry.Offset.Zero
+                        dragging = false
                     },
                     onDragCancel = {
                         dragVisual = androidx.compose.ui.geometry.Offset.Zero
+                        dragging = false
                     }
                 )
             }
@@ -630,6 +634,7 @@ private fun androidx.compose.foundation.layout.BoxScope.PetOverlay(
                 size = 88.dp,
                 musicPlaying = musicPlaying,
                 animate = true,
+                dragging = dragging,
                 unlockedActions = pet.actionUnlocks[pet.species].orEmpty().toSet()
             )
             bubbleText?.let {

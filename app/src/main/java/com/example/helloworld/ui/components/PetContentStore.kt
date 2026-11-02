@@ -67,12 +67,25 @@ object PetContentStore {
     var characters by mutableStateOf<Map<String, PetCharacterDef>>(mapOf("boy" to BOY))
         private set
 
+    /** 商店动作目录（manifest.actions）：character -> 可售 clip 名集合 */
+    private var actionsByCharacter: Map<String, Set<String>> = emptyMap()
+
+    /** 该角色在商店出售的 clip 名：未购买时引擎不允许播放/下载 */
+    fun sellableClips(characterId: String): Set<String> = actionsByCharacter[characterId].orEmpty()
+
     val progress = MutableStateFlow<PetDownloadProgress?>(null)
 
     /** 已下载解压完成的 "character/act" */
     private val readyActs = ConcurrentHashMap.newKeySet<String>()
     private val actMutexes = ConcurrentHashMap<String, Mutex>()
+    /** refresh 并发保护：多处会同时触发拉清单，串行化避免 characters 反复替换 */
+    private val refreshMutex = Mutex()
     private var refreshTried = false
+    /** 已应用的清单版本：同版本不再重复替换 characters */
+    private var appliedVersion = -1
+    /** 正在刷新：并发调用直接复用，避免同一时刻多次拉取 */
+    @Volatile
+    private var refreshing = false
     private var prefs: android.content.SharedPreferences? = null
     private var contentVersion = 1
 
@@ -99,23 +112,44 @@ object PetContentStore {
         return if (flat.exists()) flat else null
     }
 
-    /** 拉取素材清单（进宠物中心时调）；失败静默用内置 boy */
+    /** 拉取素材清单（进宠物中心时调）；失败静默用内置 boy。并发调用串行化，避免反复替换 characters 导致画面闪切 */
     suspend fun refresh() {
-        refreshTried = true
-        runCatching { MusicApiClient.service.petContentManifest() }
-            .onSuccess { m ->
-                val map = m.characters.filterValues { it.clips.isNotEmpty() }
-                if (m.version != contentVersion) {
-                    contentVersion = m.version
-                    readyActs.clear()
-                    persist()
-                    PetFrameCache.clear()
-                }
-                if (map.isNotEmpty()) {
-                    val boy = map["boy"]?.copy(builtin = true) ?: BOY
-                    characters = map + ("boy" to boy)
-                }
+        if (refreshing) return
+        refreshing = true
+        try {
+            refreshMutex.withLock {
+                runCatching { MusicApiClient.service.petContentManifest() }
+                    .onSuccess { m ->
+                        val map = m.characters.filterValues { it.clips.isNotEmpty() }
+                        if (map.isEmpty()) return@onSuccess
+                        // 版本相同：什么都不动（不重建引擎、不清帧缓存、不触发重新下载）
+                        if (m.version == appliedVersion) return@onSuccess
+                        val firstLoad = appliedVersion < 0
+                        appliedVersion = m.version
+                        contentVersion = m.version
+                        // 只有素材真的换了才清下载记录与帧缓存；首次加载保留磁盘上已有的解压结果
+                        if (!firstLoad) {
+                            readyActs.clear()
+                            PetFrameCache.clear()
+                        } else {
+                            restoreReadyActs()
+                        }
+                        persist()
+                        // 商店动作目录：该角色在售的 clip 名（未购买时引擎禁止播放/下载）
+                        actionsByCharacter = m.actions
+                            .filter { it.clip.isNotBlank() }
+                            .groupBy { it.character }
+                            .mapValues { (_, list) -> list.map { it.clip }.toSet() }
+                        // 清单里标了 builtin 的角色用内置帧（boy 离线兜底）
+                        characters = map.mapValues { (id, def) ->
+                            if (id == "boy" && def.builtin) BOY else def
+                        }
+                    }
             }
+        } finally {
+            refreshing = false
+            refreshTried = true
+        }
     }
 
     suspend fun ensureRefresh() {
@@ -217,6 +251,14 @@ object PetContentStore {
             val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             prefs = p
             contentVersion = p.getInt("version", 1)
+            restoreReadyActs()
+        }
+    }
+
+    /** 从 SharedPreferences 恢复"已解压可用"的素材段记录 */
+    private fun restoreReadyActs() {
+        runCatching {
+            val p = prefs ?: return
             val saved = p.getStringSet("ready_acts", emptySet()) ?: emptySet()
             readyActs.addAll(saved)
         }

@@ -19,6 +19,8 @@ class PetAnimationEngine(
     private val defaultFps: Float,
     private val starter: Set<String>,
     private val unlocked: Set<String>,
+    /** 商店在售的动作 id：未购买时一律不允许播放（防止被 roles 引用后绕过购买限制） */
+    private val sellable: Set<String> = emptySet(),
     private val rnd: Random = Random.Default,
 ) {
     enum class Phase { IDLE, ACTION, SLEEP }
@@ -166,6 +168,19 @@ class PetAnimationEngine(
         onFinish = { returnIdle() }
     }
 
+    /** 图鉴预览：循环播放某个动作（不回到待机），忽略已解锁限制（由调用方保证） */
+    fun playLoop(name: String): Boolean {
+        val c = clips[name] ?: return false
+        phase = Phase.ACTION
+        clipName = name
+        framePos = if (c.mode == "reverse") (c.end - c.start).toFloat() else 0f
+        frameDir = if (c.mode == "reverse") -1 else 1
+        looping = true
+        pingpong = c.mode == "pingpong"
+        onFinish = { playLoop(name) }
+        return true
+    }
+
     private fun advanceAction(dt: Float) {
         val name = clipName
         val c = name?.let { clips[it] }
@@ -283,9 +298,18 @@ class PetAnimationEngine(
 
     // ===================== helpers =====================
 
+    /**
+     * 该 clip 是否允许播放（同时也是"是否允许触发下载"的准绳）。
+     *
+     * 规则：starter + 已购买解锁的才放行；角色槽位（idle/music/drag/sleep 等）里的 clip
+     * 只有在"不属于任何可售卖动作"时才免费——避免商店里卖的动作因为被写进 roles
+     * 就绕过购买限制、被随机池触发并下载。
+     */
     private fun allowed(name: String): Boolean {
         if (name !in clips) return false
         if (name in starter || name in unlocked) return true
+        // 可售卖动作必须买过才能播
+        if (name in sellable) return false
         return name in roles.idle || name in roles.music || name in roles.click ||
             name in roles.sleepStart || name in roles.sleepLoop || name in roles.sleepEnd ||
             name in roles.move || name in roles.turn || name in roles.drag ||

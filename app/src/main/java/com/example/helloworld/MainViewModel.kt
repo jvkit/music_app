@@ -1738,6 +1738,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val petShelf = MutableStateFlow<List<PetShelfItem>>(emptyList())
     /** 全量动作目录（用于名称展示/过滤） */
     val petActionCatalog = MutableStateFlow<List<PetActionDef>>(emptyList())
+    /** 当前角色全部动作（含未解锁/等级锁），商店全量展示 */
+    val petActionShop = MutableStateFlow<List<PetActionDef>>(emptyList())
     val petShopLevel = MutableStateFlow(1)
 
     fun refreshPetShop(peer: String? = null) {
@@ -1748,6 +1750,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     petShop.value = resp.species
                     petShelf.value = resp.shelf
                     petActionCatalog.value = resp.actions
+                    petActionShop.value = resp.catalog
                     petShopLevel.value = resp.level
                 }
         }

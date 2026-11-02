@@ -97,12 +97,40 @@ Compose 单 Activity 架构，音乐服务器是隔壁 `music_web`（接口前�
   reportPetEvent，累加到该用户所有 pair）。聊天页灰底渐变 #8A8F98→#6E747E（融合透明素材灰边）。
   设计文档 docs/pet-design.md，冒烟 tools/pet_smoke_test.py（PET_PORT 起服务后跑）。
 - **宠物素材服务器化（2026-11，manifest v3，全热更新）**：角色/动画/动作价格都不依赖发版。
-  `GET /pet/content/manifest` 下发 characters[id]={name,fps,roles,starter,behaviors,clips,packs}、
+  `GET /pet/content/manifest` 下发 characters[id]={name,fps,roles,starter,behaviors,clips,packs,display}、
   actions 目录、shop、shop_rotation_version；`GET /pet/content/file/{character}/{act}` 返回分片 zip。
-  动作商店：`GET /pet/shop?friend=`（当前等级随机货架 10/20/30/40 音符，落库后固定）、
-  `POST /pet/buy_action`、`PATCH /pet/name`。客户端 PetContentStore 按 pack 懒下载 + 进度 + 版本清缓存；
-  PetAnimationEngine 由 roles/behaviors/unlocked 驱动 idle/music/click/随机池/睡觉/事件，不再写死 clip 名；
-  帧走 PetFrameCache LRU。新增角色/动作 = 服务端放 zip + 改 manifest/actions，客户端兑换后按 pack 下载。
+  动作商店：`GET /pet/shop?friend=`（返回 shelf 折扣货架 + **catalog 全量动作**，含 price/on_shelf/
+  unlocked/locked_by_level）、`POST /pet/buy_action`（货架内走折扣价、货架外走标准价
+  `10 + (min_level-1)*5`）、`PATCH /pet/name`。
+  PetAnimationEngine 由 roles/behaviors/unlocked 驱动 idle/music/click/随机池/睡觉/事件；
+  帧走 PetFrameCache LRU。新增角色/动作 = 服务端放 zip + 改 manifest/actions。
+- **★ 宠物动作必须"买了才能播/才能下载"（2026-11-02 修复）**：
+  `PetAnimationEngine.allowed()` 曾有一个漏洞——只要 clip 出现在 `roles` 任意槽位（idle/music/move/
+  turn/drag/events...）就放行，导致**商店在售的动作仅因被 `roles` 引用即可被随机池抽中、并触发整包下载**。
+  现在引擎构造时传入 `sellable`（manifest.actions 里该角色的在售 clip 集合），未购买一律拒绝：
+  starter / unlocked 才免费，其余槽位里的 clip 若在售则视为需要购买。
+  同时**删除了解锁动作的批量预下载**（原 `LaunchedEffect(unlockedActions)` 会为每个买过的动作下载
+  其所在 pack，实测 10 个解锁动作触发 85MB：core 43MB + small 35MB + text 6.6MB）。
+  现在的下载时机 = `PetAvatar` 帧循环里"当前播放的 act 未就绪才后台拉"，不阻塞渲染。
+- **★ PetContentStore.refresh() 的坑（2026-11-02，闪切/重复下载根因）**：`characters` 是 Compose state，
+  `PetAvatar` 的 `characterId` 由它派生，`remember(characterId, character, ...)` 建引擎。
+  早期实现每次 refresh 都无条件 `characters = map`（还比较对象是否相等，而 boy 会被替换成内置 BOY
+  导致永远"不相等"），于是刷新→重组→引擎重建→LaunchedEffect 再 refresh 形成死循环，
+  表现为**角色在 boy 和当前角色之间疯狂交替 + 反复重新下载素材**。修复：
+  ① `refreshMutex` + `refreshing` 标志串行化；② **只在 manifest.version 变化时替换** `characters`；
+  ③ 版本没变时不清 readyActs / PetFrameCache；④ 首次加载从 SharedPreferences 恢复已解压记录而不是清空。
+- **display 显示修正（2026-11-02）**：各角色素材在 360x480 画布内的留白基准不同（鲸鱼娘上方空 20%、
+  小河灵左右各空 27%、大肥鱼几乎占满），UI 取一个值必然顾此失彼。改为 manifest 每角色下发
+  `display={offsetX, offsetY, scale}`（offset 是画布宽高的百分比，正=右/下），`PetAvatar` 绘制时应用。
+  **只给投喂页大角色开 `applyDisplay=true`**：商店/图鉴缩略图、聊天页小宠物用原比例铺满，
+  否则套用 0.5 缩放会变得极小。当前值：鲸鱼娘 {0.07, -0.15, 0.5}、大肥鱼 {0, -0.15, 0.402}
+  （0.402 是按内容占画布比例折算，与大肥鱼同样观感）、小河灵 {0,0,1.0}。
+  注意：改素材帧做"归一化"的方案已验证不可行（会裁边/位移丢失），已被 display 方案取代。
+- **宠物页面结构（2026-11-02 合并）**：tab 从 5 个减为 4 个 = 任务 / 投喂 / 角色 / 图鉴。
+  原「动作」与「图鉴」已合并为「图鉴」：3 列网格卡片，列出**全部**动作（未解锁也可见），
+  已解锁点击进入全屏循环预览（`PetAnimationEngine.playLoop()`），未解锁点击即购买，等级不够置灰。
+  `AlbumTab` 已删除。
+
 - **试听剪辑检测（2026-11-01）**：部分音源返回 15s/30s/50s 试听片段。YinHeMediaService
   checkTruncatedStream：STATE_READY 且元数据时长≥90s、实际<60% 且<75s → blockUrl+标记源已试，
   重新走换源链找完整版；换源无更优时用回此前地址（不跳歌，防元数据时长不准误伤）。

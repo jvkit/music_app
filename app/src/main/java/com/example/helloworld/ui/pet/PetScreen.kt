@@ -77,7 +77,7 @@ fun PetScreen(viewModel: MainViewModel) {
     val pets by viewModel.pets.collectAsState()
     val shop by viewModel.petShop.collectAsState()
     val shelf by viewModel.petShelf.collectAsState()
-    val actionCatalog by viewModel.petActionCatalog.collectAsState()
+    val actionCatalog by viewModel.petActionShop.collectAsState()
     var selectedFriend by remember { mutableStateOf<String?>(null) }
     var tab by remember { mutableIntStateOf(0) }
     // 投喂/互动触发器：+1 触发一次随机互动
@@ -200,7 +200,7 @@ fun PetScreen(viewModel: MainViewModel) {
                     .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))
                     .padding(4.dp)
             ) {
-                listOf("任务", "投喂", "角色", "动作", "图鉴").forEachIndexed { i, label ->
+                listOf("任务", "投喂", "角色", "图鉴").forEachIndexed { i, label ->
                     val active = tab == i
                     Box(
                         modifier = Modifier
@@ -281,11 +281,23 @@ fun PetScreen(viewModel: MainViewModel) {
                         }
                     }
                 )
-                else -> AlbumTab(modifier = Modifier.weight(1f), pair = pair)
+                else -> ActionShopTab(
+                    modifier = Modifier.weight(1f),
+                    pair = pair,
+                    shelf = shelf,
+                    actionCatalog = actionCatalog,
+                    onBuy = { actionId, name ->
+                        viewModel.petBuyAction(friend, actionId) { err ->
+                            feedMsg = err
+                            viewModel.notifyHint(err ?: "解锁动作：$name！")
+                        }
+                    }
+                )
             }
         }
     }
 }
+
 
 /** 超大精灵舞台：占满分配空间的极限大小；点精灵互动（3s 冷却+气泡），云逗宠实时同步，两侧切角色 */
 @Composable
@@ -398,7 +410,8 @@ private fun BigPetStage(
                         animate = true,
                         unlockedActions = unlockedActions,
                         externalEvent = externalAction,
-                        externalEventSeq = externalSeq
+                        externalEventSeq = externalSeq,
+                        applyDisplay = true
                     )
                     bubble?.let {
                         Box(
@@ -791,7 +804,7 @@ private fun SpeciesTab(
     }
 }
 
-/** 动作商店：当前等级随机货架（生成后固定），音符购买 */
+/** 动作图鉴（合并原「动作」与「图鉴」）：网格卡片，未解锁也可见，点按购买 */
 @Composable
 private fun ActionShopTab(
     modifier: Modifier = Modifier,
@@ -801,79 +814,10 @@ private fun ActionShopTab(
     onBuy: (String, String) -> Unit,
 ) {
     val unlocked = pair.actionUnlocks[pair.species].orEmpty().toSet()
-    LazyColumn(
-        modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-        contentPadding = PaddingValues(bottom = 150.dp)
-    ) {
-        item {
-            Text(
-                "Lv${pair.level} 动作货架 · 音符 ${pair.notes} · 已解锁 ${unlocked.size} 个动作",
-                color = Color.White.copy(alpha = 0.65f),
-                fontSize = 12.sp,
-                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
-            )
-        }
-        if (shelf.isEmpty()) {
-            item {
-                Text(
-                    "本级货架暂无动作，升级后再来看看",
-                    color = Color.White.copy(alpha = 0.45f),
-                    fontSize = 13.sp,
-                    modifier = Modifier.padding(vertical = 24.dp)
-                )
-            }
-        } else {
-            items(shelf, key = { "shelf_${it.action}" }) { item ->
-                val owned = item.action in unlocked
-                val notesOk = pair.notes >= item.price
-                val meta = actionCatalog.firstOrNull { it.id == item.action }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
-                        .padding(horizontal = 14.dp, vertical = 11.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(item.name, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            (meta?.category?.ifBlank { item.category } ?: item.category) + " · " + item.pack.ifBlank { "core" },
-                            color = Color.White.copy(alpha = 0.45f),
-                            fontSize = 10.sp
-                        )
-                    }
-                    if (item.sold || owned) {
-                        Text("已解锁", color = Color(0xFF4ADE80), fontSize = 12.sp)
-                    } else {
-                        Text(
-                            "${item.price} 音符",
-                            color = if (notesOk) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.primary,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(end = 8.dp)
-                        )
-                        TextButton(
-                            enabled = notesOk,
-                            onClick = { onBuy(item.action, item.name) }
-                        ) {
-                            Text(
-                                "解锁",
-                                color = if (notesOk) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.3f),
-                                fontSize = 13.sp
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** 图鉴：当前角色已解锁动作 */
-@Composable
-private fun AlbumTab(modifier: Modifier = Modifier, pair: PetPairDto) {
-    val unlocked = pair.actionUnlocks[pair.species].orEmpty()
+    val items = actionCatalog
+    val ownedCount = items.count { it.unlocked || it.id in unlocked }
+    // 已解锁动作的放大循环预览
+    var preview by remember { mutableStateOf<PetActionDef?>(null) }
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -881,35 +825,125 @@ private fun AlbumTab(modifier: Modifier = Modifier, pair: PetPairDto) {
     ) {
         item {
             Text(
-                "已解锁 ${unlocked.size} 个动作 · 其余去「动作」货架兑换",
+                "已解锁 $ownedCount/${items.size} 个动作 · 音符 ${pair.notes} · 未解锁点按兑换",
                 color = Color.White.copy(alpha = 0.7f),
                 fontSize = 13.sp,
                 modifier = Modifier.padding(top = 4.dp)
             )
         }
-        items(unlocked.chunked(3)) { rowActions ->
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                rowActions.forEach { action ->
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
-                            .padding(vertical = 14.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        PetAvatar(species = pair.species, trigger = 0L, size = 40.dp, animate = false)
-                        Text(
-                            action,
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(top = 6.dp)
-                        )
+        if (items.isEmpty()) {
+            item {
+                Text(
+                    "这个角色暂无动作目录，等服务器上新",
+                    color = Color.White.copy(alpha = 0.45f),
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(vertical = 24.dp)
+                )
+            }
+        } else {
+            items(items.chunked(3)) { rowItems ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    rowItems.forEach { def ->
+                        val owned = def.unlocked || def.id in unlocked
+                        val lockedByLevel = def.lockedByLevel || pair.level < def.minLevel
+                        val notesOk = pair.notes >= def.price
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(
+                                    MaterialTheme.colorScheme.surface.copy(
+                                        alpha = when {
+                                            owned -> 0.7f
+                                            lockedByLevel -> 0.3f
+                                            else -> 0.55f
+                                        }
+                                    )
+                                )
+                                .clickable(
+                                    enabled = owned || (!lockedByLevel && notesOk)
+                                ) {
+                                    if (owned) preview = def else onBuy(def.id, def.name)
+                                }
+                                .padding(vertical = 12.dp, horizontal = 6.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            PetAvatar(species = pair.species, trigger = 0L, size = 40.dp, animate = false)
+                            Text(
+                                def.name.ifBlank { def.id },
+                                color = if (owned) Color.White
+                                else if (lockedByLevel) Color.White.copy(alpha = 0.4f)
+                                else Color.White.copy(alpha = 0.8f),
+                                fontSize = 11.sp,
+                                maxLines = 2,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                modifier = Modifier.padding(top = 6.dp)
+                            )
+                            Text(
+                                when {
+                                    owned -> "已解锁"
+                                    lockedByLevel -> "需 Lv${def.minLevel}"
+                                    else -> "${def.price} 音符"
+                                },
+                                color = when {
+                                    owned -> Color(0xFF4ADE80)
+                                    lockedByLevel -> Color.White.copy(alpha = 0.3f)
+                                    notesOk -> MaterialTheme.colorScheme.primary
+                                    else -> Color.White.copy(alpha = 0.3f)
+                                },
+                                fontSize = 10.sp,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
                     }
+                    repeat(3 - rowItems.size) { Spacer(modifier = Modifier.weight(1f)) }
                 }
-                // 补齐 3 列
-                repeat(3 - rowActions.size) { Spacer(modifier = Modifier.weight(1f)) }
+            }
+        }
+    }
+
+    // 已解锁动作放大预览：循环播放，点任意处关闭
+    preview?.let { def ->
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { preview = null },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.82f))
+                    .clickable { preview = null },
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    PetAvatar(
+                        species = pair.species,
+                        trigger = 0L,
+                        size = 300.dp,
+                        animate = true,
+                        unlockedActions = unlocked,
+                        loopClip = def.clip.ifBlank { def.id },
+                        applyDisplay = true
+                    )
+                    Text(
+                        def.name.ifBlank { def.id },
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                    Text(
+                        "点击任意处关闭",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
             }
         }
     }
 }
+

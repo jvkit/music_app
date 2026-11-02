@@ -332,7 +332,12 @@ data class PetActionDef(
     val category: String = "",
     val clip: String = "",
     @SerializedName("min_level") val minLevel: Int = 1,
-    val pack: String = ""
+    val pack: String = "",
+    /** 图鉴/全量商店用：是否已解锁、是否被等级门槛锁住、价格与是否在折扣货架 */
+    val unlocked: Boolean = false,
+    @SerializedName("locked_by_level") val lockedByLevel: Boolean = false,
+    @SerializedName("on_shelf") val onShelf: Boolean = false,
+    val price: Int = 0
 )
 
 data class PetShopResponse(
@@ -345,6 +350,8 @@ data class PetShopResponse(
     val shelf: List<PetShelfItem> = emptyList(),
     @SerializedName("action_unlocks") val actionUnlocks: List<String> = emptyList(),
     val actions: List<PetActionDef> = emptyList(),
+    /** 当前角色全部动作（含未解锁/等级锁），商店全量展示 */
+    val catalog: List<PetActionDef> = emptyList(),
     @SerializedName("rotation_version") val rotationVersion: Int = 1
 )
 
@@ -399,7 +406,23 @@ data class PetCharacterDef(
     val starter: List<String> = emptyList(),
     val behaviors: PetBehaviors = PetBehaviors(),
     val builtin: Boolean = false,
-    val packs: List<PetPackDef> = emptyList()
+    val packs: List<PetPackDef> = emptyList(),
+    /** 该角色在画面中的位置/缩放修正（画布 360x480 基准，不用改素材帧） */
+    val display: PetDisplayDef = PetDisplayDef()
+)
+
+/**
+ * 角色显示修正：各角色素材在画布内的留白基准不一致，
+ * 用这组参数在绘制时统一对齐，服务端改完即生效、无需发版。
+ *
+ * offsetX/offsetY 以「画布宽/高的百分比」计（-1..1），正数=右/下。
+ */
+data class PetDisplayDef(
+    val offsetX: Float = 0f,
+    val offsetY: Float = 0f,
+    val scale: Float = 1f,
+    /** 只按 alpha 自动对齐脚底与水平中心（默认开），叠加在 offset 之前 */
+    @SerializedName("auto_align") val autoAlign: Boolean = true
 )
 
 data class PetContentManifestResponse(
