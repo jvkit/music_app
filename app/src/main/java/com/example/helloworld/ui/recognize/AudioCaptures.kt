@@ -79,6 +79,27 @@ object AudioCaptures {
         }
     }
 
+    /**
+     * 判断一段 WAV 是否接近全静音（跳过 44 字节头，采样绝对值都很小即算静音）。
+     * 用途：源应用设了 ALLOW_CAPTURE_BY_NONE 时内录"成功"但全是 0，需要给用户明确提示。
+     */
+    fun isSilent(wav: ByteArray, threshold: Int = 64): Boolean {
+        if (wav.size <= 44) return true
+        var peak = 0
+        var i = 44
+        // 每 400 字节采一个 16bit 样本，够判断了
+        while (i + 1 < wav.size) {
+            val lo = wav[i].toInt() and 0xFF
+            val hi = wav[i + 1].toInt()
+            val sample = ((hi shl 8) or lo)
+            val abs = kotlin.math.abs(sample)
+            if (abs > peak) peak = abs
+            if (peak >= threshold) return false
+            i += 400
+        }
+        return true
+    }
+
     /** 系统内录（API 29+，阻塞执行，请放 Dispatchers.IO）；失败返回 null */
     @TargetApi(Build.VERSION_CODES.Q)
     fun recordSystem(
@@ -88,7 +109,7 @@ object AudioCaptures {
     ): ByteArray? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
         val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING)
-        if (minBuf <= 0) return null
+        if (minBuf <= 0) throw IllegalStateException("AudioRecord 缓冲区不可用（minBuf=$minBuf）")
         val bufferSize = maxOf(minBuf * 2, BYTES_PER_SEC / 2)
         val record = try {
             val captureConfig = AudioPlaybackCaptureConfiguration.Builder(projection)
@@ -108,17 +129,18 @@ object AudioCaptures {
                 .setAudioPlaybackCaptureConfig(captureConfig)
                 .build()
         } catch (e: Exception) {
-            return null
+            // 不要吞掉：调用方要能把原因展示给用户（Android 14+ 未注册 Callback 之类）
+            throw IllegalStateException("构建 AudioRecord 失败：${e::class.simpleName} ${e.message}", e)
         }
         if (record.state != AudioRecord.STATE_INITIALIZED) {
             record.release()
-            return null
+            throw IllegalStateException("AudioRecord 未初始化（state=${record.state}）")
         }
         return try {
             record.startRecording()
             readLoop(record, seconds, bufferSize, onTick)
         } catch (e: Exception) {
-            null
+            throw IllegalStateException("录音中断：${e::class.simpleName} ${e.message}", e)
         } finally {
             runCatching { record.stop() }
             record.release()

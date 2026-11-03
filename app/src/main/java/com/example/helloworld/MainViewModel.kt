@@ -870,22 +870,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             projection = runCatching {
                 manager.getMediaProjection(android.app.Activity.RESULT_OK, data)
+            }.onFailure {
+                com.example.helloworld.playback.YinheLogger.log(
+                    "识曲", "getMediaProjection 失败：${it::class.simpleName} ${it.message}"
+                )
             }.getOrNull()
             if (projection == null) {
                 recognizePhase = "done"
                 recognizeError = "没能建立音频捕获会话，请重新授权"
                 // 缓存失效，清掉让 UI 重新要授权
                 cachedProjectionIntent = null
+                cachedProjection = null
                 return
             }
-            cachedProjection = projection
-            cachedProjectionIntent = data
-            // 会话意外结束时清缓存，下次会自动重新授权
+            // Android 14+ 硬性要求：拿到 MediaProjection 后必须**立刻**注册 Callback，
+            // 否则后续 AudioRecord 构建会被系统拒绝。旧写法先存缓存后注册，等于顺序颠倒。
             projection.registerCallback(object : android.media.projection.MediaProjection.Callback() {
                 override fun onStop() {
                     cachedProjection = null
                 }
             }, android.os.Handler(android.os.Looper.getMainLooper()))
+            cachedProjection = projection
+            cachedProjectionIntent = data
         }
 
         val gen = ++recognizeGen
@@ -895,19 +901,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         recognizeError = null
         val session = projection
         viewModelScope.launch {
-            val wav = withContext(Dispatchers.IO) {
-                AudioCaptures.recordSystem(session) { p ->
+            val result = withContext(Dispatchers.IO) {
+                runCatching { AudioCaptures.recordSystem(session) { p ->
                     viewModelScope.launch(Dispatchers.Main) {
                         if (gen == recognizeGen) recognizeProgress = p
                     }
-                }
+                } }
             }
-            // 录音结束**不** stop 投影：保留会话供下次识别复用（这是省掉重复弹窗的关键）
             if (gen != recognizeGen) return@launch
+            val wav = result.getOrNull()
             if (wav == null) {
+                val why = result.exceptionOrNull()?.let { "${it::class.simpleName}: ${it.message}" }
+                    ?: "AudioRecord 初始化失败（设备不支持内录，或该声音被源应用禁止捕获）"
+                com.example.helloworld.playback.YinheLogger.log("识曲", "系统内录失败：$why")
                 withContext(Dispatchers.Main) {
                     recognizePhase = "done"
-                    recognizeError = "系统音频捕获失败"
+                    recognizeError = "系统内录失败：$why"
+                }
+                return@launch
+            }
+            // 全静音检测：源应用设了 ALLOW_CAPTURE_BY_NONE 时，能录但全是 0
+            if (AudioCaptures.isSilent(wav)) {
+                com.example.helloworld.playback.YinheLogger.log("识曲", "系统内录录到全静音，疑似源应用禁止捕获")
+                withContext(Dispatchers.Main) {
+                    recognizePhase = "done"
+                    recognizeError = "录到的全是静音——可能是对方应用禁止了内录，改用麦克风识曲试试"
                 }
                 return@launch
             }
