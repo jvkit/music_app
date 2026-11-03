@@ -32,6 +32,26 @@ android {
         compose = true
         buildConfig = true
     }
+
+    /**
+     * 正式包：开 minify + 资源裁剪，体积从 28MB 砍到一半以下。
+     *
+     * 签名沿用 debug key——必须和已经发出去的包同签名，否则老用户无法覆盖安装
+     * （换 key 会报「应用未安装/签名冲突」）。所以这里只做代码压缩，不换签名。
+     */
+    buildTypes {
+        release {
+            // 注意：R8 需要约 4GB 堆。这台 16G 机器构建前先关掉浏览器/微信等再跑，
+            // 否则会 Native memory allocation (mmap) failed for G1 virtual space 崩掉。
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("debug")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
 }
 
 dependencies {

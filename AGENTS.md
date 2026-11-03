@@ -224,3 +224,21 @@ Compose 单 Activity 架构，音乐服务器是隔壁 `music_web`（接口前�
   + 通知栏 + 识曲页历史（`recognize_history` 表，Room v5，一次识别存全部匹配）。
 - **动作池规则（用户定义）**：点击与空闲随机都应能抽到**任意已购买动作**，
   `roles.click` 只是"特定指名"，给权重不排他；动作播放满 0.5s 后允许被下一次点击打断。
+
+## 发行包与下载（2026-11，v1.7.0 事故复盘）
+
+- **发版必须用 release 包，不要发 debug 包**：debug 包 28MB（`classes*.dex` 未压缩共 36MB），
+  国内链路实测 360KB/s、要传 80 秒，中途断一次就得到残缺 apk，
+  用户看到的是 **`packageinfo is null`**（不是签名问题，也不是包坏了）。
+  `buildTypes.release` 已配 `isMinifyEnabled + isShrinkResources`。
+- **签名沿用 debug key**（`signingConfig = signingConfigs.getByName("debug")`）：
+  已经发出去的包是 debug 签名的，换 key 会让老用户无法覆盖安装。
+  所以只做代码压缩，不换签名。
+- **开 minify 后必须 keep 这些反射相关的东西**（`app/proguard-rules.pro`）：
+  Gson 数据类 `data.remote.**`/`data.local.**`、`com.google.gson.reflect.TypeToken` 及其子类、
+  Retrofit 的 `Call`/`Response`/`Continuation`、`* extends RoomDatabase`、
+  以及 Manifest 里声明的 `SystemCaptureService`/`BubbleService`/`YinHeMediaService`。
+- 服务器同时发布 md5：`~/www/download/music/app/yinhe-music.apk.md5`，装机前可比对。
+- 排障口诀：**`packageinfo is null` → 先查下载完整性（比 size/md5），不要先怀疑签名**。
+  决定性证据在 `sudo grep "yinhe-music.apk" /var/log/nginx/access.log | tail`，
+  看是不是反复 `206` 且每次都只传了 7~11MB。
