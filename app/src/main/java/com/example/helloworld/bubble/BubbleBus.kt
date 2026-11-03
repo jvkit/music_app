@@ -9,13 +9,20 @@ import kotlinx.coroutines.flow.asSharedFlow
  * - 识曲请求同时触发 requestRecognize（应用可能已在后台，靠流唤醒 UI 并拉起前台）。
  */
 object BubbleBus {
-    enum class Command { PlayPause, Next, Previous, RecognizeMic, RecognizeSystem, Close }
+    enum class Command { PlayPause, Next, Previous, RecognizeMic, RecognizeSystem, Favorite, OpenApp, Close }
 
     private val _commands = MutableSharedFlow<Command>(extraBufferCapacity = 16)
     val commands = _commands.asSharedFlow()
 
     private val _recognizeRequests = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val recognizeRequests = _recognizeRequests.asSharedFlow()
+
+    /**
+     * 播放状态回传（UI → 悬浮球）：环形菜单中心按钮据此显示暂停还是播放。
+     * 悬浮球服务与 App 同进程，用普通 volatile 即可，不必走流。
+     */
+    @Volatile
+    var isPlaying: Boolean = false
 
     /**
      * 冷启动兜底：Activity 在 Compose 订阅前收到 intent 时，把模式存在这里，

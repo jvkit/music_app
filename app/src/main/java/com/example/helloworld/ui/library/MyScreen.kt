@@ -866,6 +866,8 @@ private fun AboutDialog(
                     lineHeight = 18.sp,
                     modifier = Modifier.padding(top = 10.dp)
                 )
+                // 权限检查：缺哪个点哪个去申请（悬浮球/识曲都要系统授权，装完默认是不给的）
+                PermissionSection(context)
                 status?.let {
                     Text(
                         text = it,

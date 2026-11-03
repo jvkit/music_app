@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -81,9 +82,14 @@ fun NowPlayingScreen(
     onNext: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onCycleRepeatMode: () -> Unit,
-    onSeek: (Long) -> Unit
+    onSeek: (Long) -> Unit,
+    sleepTimerActive: Boolean = false,
+    sleepTimerLabel: String = "",
+    onSleepTimer: (Int) -> Unit = {},
+    onSleepTimerCancel: () -> Unit = {}
 ) {
     var showLyricsPanel by remember { androidx.compose.runtime.mutableStateOf(false) }
+    var showSleepTimer by remember { androidx.compose.runtime.mutableStateOf(false) }
 
     BackHandler(onBack = onClose)
 
@@ -105,6 +111,13 @@ fun NowPlayingScreen(
             ) {
                 IconButton(onClick = onClose, modifier = Modifier.size(40.dp)) {
                     Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = Color.White)
+                }
+                IconButton(onClick = { showSleepTimer = true }, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "定时关闭",
+                        tint = if (sleepTimerActive) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.6f)
+                    )
                 }
                 Column(
                     modifier = Modifier.weight(1f),
@@ -306,6 +319,103 @@ fun NowPlayingScreen(
                         modifier = Modifier.size(26.dp)
                     )
                 }
+            }
+        }
+
+        // 定时关闭面板（从底部浮出，盖在播放页之上）
+        if (showSleepTimer) {
+            SleepTimerPanel(
+                active = sleepTimerActive,
+                label = sleepTimerLabel,
+                onPick = {
+                    onSleepTimer(it)
+                    showSleepTimer = false
+                },
+                onCancelTimer = {
+                    onSleepTimerCancel()
+                    showSleepTimer = false
+                },
+                onDismiss = { showSleepTimer = false }
+            )
+        }
+    }
+}
+
+/**
+ * 定时关闭面板：底部浮出，列出常用档位 + 「播完当前首」。
+ * 已在计时中时显示剩余时间和取消按钮。
+ */
+@Composable
+private fun SleepTimerPanel(
+    active: Boolean,
+    label: String,
+    onPick: (Int) -> Unit,
+    onCancelTimer: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.45f))
+            .clickable(indication = null, interactionSource = androidx.compose.foundation.interaction.MutableInteractionSource()) {
+                onDismiss()
+            },
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                .background(Color(0xFF1B1B24))
+                .clickable(indication = null, interactionSource = androidx.compose.foundation.interaction.MutableInteractionSource()) {}
+                .padding(horizontal = 20.dp, vertical = 18.dp)
+        ) {
+            Text(
+                "定时关闭",
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                if (active) label else "到时间自动暂停播放，伴你入睡",
+                color = Color.White.copy(alpha = 0.5f),
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+            )
+            com.example.helloworld.playback.SleepTimer.PRESETS.forEach { minutes ->
+                Text(
+                    "$minutes 分钟后",
+                    color = Color.White,
+                    fontSize = 15.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onPick(minutes) }
+                        .padding(vertical = 12.dp, horizontal = 4.dp)
+                )
+            }
+            Text(
+                "播完当前这首",
+                color = Color.White,
+                fontSize = 15.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onPick(0) }
+                    .padding(vertical = 12.dp, horizontal = 4.dp)
+            )
+            if (active) {
+                Text(
+                    "取消定时",
+                    color = MaterialTheme.colorScheme.primary,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onCancelTimer() }
+                        .padding(vertical = 12.dp, horizontal = 4.dp)
+                )
             }
         }
     }

@@ -12,6 +12,7 @@ import com.example.helloworld.data.FavoritesRepository
 import com.example.helloworld.data.PlaylistRepository
 import com.example.helloworld.data.SourceCatalog
 import com.example.helloworld.data.local.AuthRepository
+import com.example.helloworld.data.local.ImMessageEntity
 import com.example.helloworld.data.local.SettingsRepository
 import com.example.helloworld.data.local.YinHeDatabase
 import com.example.helloworld.data.model.Playlist
@@ -72,6 +73,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val favoritesRepository = FavoritesRepository(database.favoriteTrackDao())
     private val cacheRepository = CacheRepository(database.cachedTrackDao())
     private val playerController = PlayerController(application, viewModelScope)
+
+    /** 定时关闭：到点只暂停，不退出服务（用户可能马上又听） */
+    private val sleepTimer = com.example.helloworld.playback.SleepTimer(viewModelScope) {
+        playerController.pause()
+        sleepTimerFired = true
+    }
+    val sleepTimerState = sleepTimer.state
+
+    /** 刚触发过定时关闭：UI 用来弹一次「已暂停」提示 */
+    var sleepTimerFired by mutableStateOf(false)
+        private set
+
+    fun clearSleepTimerFired() {
+        sleepTimerFired = false
+    }
+
+    fun startSleepTimer(minutes: Int) {
+        sleepTimer.start(minutes)
+    }
+
+    /** 播完当前首再停 */
+    fun startSleepTimerEndOfTrack() {
+        sleepTimer.startEndOfTrack(playerController.currentMediaId.value)
+    }
+
+    fun cancelSleepTimer() {
+        sleepTimer.cancel()
+    }
 
     private val api get() = MusicApiClient.service
 
@@ -391,7 +420,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         SettingsRepository.init(application)
         AuthRepository.init(application)
         viewModelScope.launch {
-            playerController.isPlaying.collect { isPlaying = it }
+            playerController.isPlaying.collect {
+                isPlaying = it
+                // 回传悬浮球：环形菜单中心按钮据此显示播放/暂停
+                com.example.helloworld.bubble.BubbleBus.isPlaying = it
+            }
         }
         viewModelScope.launch {
             playerController.isBuffering.collect { isBuffering = it }
@@ -411,6 +444,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             playerController.currentMediaId.collect { mediaId ->
                 if (mediaId == null) return@collect
+                // 「播完当前首」的定时关闭：切歌即暂停
+                sleepTimer.onMediaChanged(mediaId)
                 findTrack(mediaId)?.let {
                     currentTrack = it
                     prefetchLyrics(it)
@@ -868,6 +903,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             BubbleBus.Command.Previous -> seekToPrevious()
             BubbleBus.Command.RecognizeMic -> openRecognize("mic")
             BubbleBus.Command.RecognizeSystem -> openRecognize("system")
+            BubbleBus.Command.Favorite -> {
+                val track = currentTrack
+                if (track.id != PlaceholderTrack.id) toggleFavorite(track)
+            }
+            // 进入软件：悬浮球直接拉起 MainActivity 即可，这里无需额外动作
+            BubbleBus.Command.OpenApp -> Unit
             BubbleBus.Command.Close -> toggleBubble(false)
         }
     }
@@ -1473,6 +1514,118 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun messagesFor(peer: String) = imMessageDao.observeFor(peer)
+
+    // ===================== 聊天页 @小精灵 =====================
+
+    /** 正在等精灵回复的会话（peer）；非空时聊天页显示"精灵正在想…" */
+    var spriteThinkingFor by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * 在聊天页 @精灵：把最近聊天记录拼成上下文，调 /sprite/chat 流式拿回复。
+     *
+     * - 精灵知道自己在谁的聊天里、两人分别是谁（区分用户靠消息前缀「名字: 内容」）
+     * - 精灵下发的 player_command 直接落到本机播放器
+     * - 回复存成一条 msgType="sprite" 的本地消息（不发给对方）
+     */
+    fun askSprite(peer: String, question: String, history: List<ImMessageEntity>) {
+        val me = myName() ?: AuthRepository.username() ?: "我"
+        val petName = pets.value[peer]?.name?.takeIf { it.isNotBlank() } ?: "小河灵"
+        viewModelScope.launch(Dispatchers.IO) {
+            withContext(Dispatchers.Main) { spriteThinkingFor = peer }
+
+            // 上下文：最近 12 条纯文字聊天，标明谁说的
+            val recent = history
+                .filter { it.msgType == "chat" && it.text.isNotBlank() }
+                .takeLast(12)
+                .joinToString("\n") { msg ->
+                    val who = if (msg.outgoing) me else peer
+                    "$who: ${msg.text}"
+                }
+
+            val prompt = buildString {
+                append("[系统提示] 你在 $me 和 $peer 的聊天里，你是两人共养的小精灵「$petName」，")
+                append("要分别认得出这两个人。下面是最近的聊天记录：\n")
+                if (recent.isBlank()) append("（还没有聊天记录）\n") else append(recent).append("\n")
+                append("[系统提示] 现在 $me @了你，说：")
+                append(question)
+            }
+
+            val player = mapOf(
+                "current_track" to currentTrack.takeIf { it.id != PlaceholderTrack.id }?.let {
+                    mapOf("title" to it.title, "artist" to it.artist)
+                },
+                "is_playing" to isPlaying
+            )
+
+            var reply = ""
+            try {
+                MusicApiClient.spriteChat(
+                    message = prompt,
+                    sessionId = "im_${peer}",
+                    player = player
+                ) { event ->
+                    when (event.type) {
+                        "reply" -> reply = event.text
+                        // 精灵要求识曲：拉起识曲页并自动开录
+                        "recognize" -> {
+                            val source = event.command?.optString("source").orEmpty()
+                            openRecognize(source.ifBlank { "system" })
+                        }
+                        "player_command" -> handleSpriteCommand(event.command)
+                        "error" -> if (reply.isBlank()) reply = event.message.ifBlank { "精灵走神了…" }
+                    }
+                }
+            } catch (e: Exception) {
+                reply = "精灵掉线了：${e.message?.take(60) ?: "网络不太好"}"
+            }
+
+            if (reply.isNotBlank()) {
+                imMessageDao.insert(
+                    ImMessageEntity(
+                        peer = peer,
+                        outgoing = false,
+                        msgType = "sprite",
+                        text = reply,
+                        ts = System.currentTimeMillis()
+                    )
+                )
+            }
+            withContext(Dispatchers.Main) { spriteThinkingFor = null }
+        }
+    }
+
+    /** 精灵下发的播放指令 → 本机播放器 */
+    private fun handleSpriteCommand(command: org.json.JSONObject?) {
+        command ?: return
+        val action = command.optString("action")
+        when (action) {
+            "play" -> {
+                val arr = command.optJSONArray("tracks") ?: return
+                val tracks = buildList {
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val apiTrack = runCatching {
+                            com.google.gson.Gson().fromJson(
+                                obj.toString(),
+                                com.example.helloworld.data.remote.ApiTrack::class.java
+                            )
+                        }.getOrNull() ?: continue
+                        add(apiTrack.toUiTrack())
+                    }
+                }
+                if (tracks.isNotEmpty()) {
+                    viewModelScope.launch(Dispatchers.Main) {
+                        playTrack(tracks.first(), tracks)
+                    }
+                }
+            }
+            "pause" -> viewModelScope.launch(Dispatchers.Main) { playerController.pause() }
+            "resume" -> viewModelScope.launch(Dispatchers.Main) { playerController.play() }
+            "next" -> seekToNext()
+            "prev" -> seekToPrevious()
+        }
+    }
 
     fun refreshFriends() {
         viewModelScope.launch(Dispatchers.IO) {

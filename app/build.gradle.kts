@@ -22,8 +22,8 @@ android {
         applicationId = "com.example.helloworld"
         minSdk = 23
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.5.0"
+        versionCode = 6
+        versionName = "1.6.0"
         buildConfigField("String", "SERVER_API_BASE", "\"$serverApiBaseUrl\"")
         buildConfigField("String", "SERVER_ORIGIN", "\"$serverOrigin\"")
     }
@@ -37,6 +37,8 @@ android {
 dependencies {
     implementation("androidx.activity:activity-compose:1.11.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4")
+    // 悬浮球用 LifecycleService 挂 ComposeView（需要 ViewTreeLifecycleOwner）
+    implementation("androidx.lifecycle:lifecycle-service:2.9.4")
     implementation(platform("androidx.compose:compose-bom:2025.11.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")

@@ -3,8 +3,11 @@ package com.example.helloworld.data.remote
 import com.example.helloworld.data.local.SettingsRepository
 import com.google.gson.annotations.SerializedName
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
@@ -594,12 +597,30 @@ data class RecognizeResponse(
     val matched: Boolean = false
 )
 
+/**
+ * 小精灵流事件。一行 ndjson 对应一个：
+ * - type=reply         text 是精灵说的话
+ * - type=player_command command 里是 {action, tracks, ...}
+ * - type=done / error  流结束 / 出错（message）
+ */
+data class SpriteEvent(
+    val type: String,
+    val text: String = "",
+    val message: String = "",
+    val command: org.json.JSONObject? = null
+)
+
 object MusicApiClient {
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(6, TimeUnit.SECONDS)
         // 外网源（YouTube/SoundCloud 走代理）搜索可能要 10-20s，超时放宽
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
+        .build()
+
+    /** 小精灵对话是 LLM ndjson 流，服务端整体上限 90s，读超时给足 */
+    private val spriteClient = okHttpClient.newBuilder()
+        .readTimeout(120, TimeUnit.SECONDS)
         .build()
 
     @Volatile
@@ -631,6 +652,57 @@ object MusicApiClient {
     suspend fun recognizeAudio(wav: ByteArray): RecognizeResponse {
         val body = wav.toRequestBody("audio/wav".toMediaTypeOrNull())
         return service.recognize(body, fmt = "wav")
+    }
+
+    /**
+     * 小精灵对话（ndjson 流）。服务端按行下发
+     * {type: tool|player_command|reply|done|error}，这里逐行解析并回调。
+     *
+     * 用回调而不是 Flow：调用方通常只需要"边收边更新一条聊天气泡"，
+     * 且解析要和 okhttp 的阻塞读绑在同一协程里，回调最直观。
+     */
+    suspend fun spriteChat(
+        message: String,
+        sessionId: String,
+        player: Map<String, Any?>,
+        onEvent: (SpriteEvent) -> Unit
+    ) = withContext(Dispatchers.IO) {
+        val payload = org.json.JSONObject().apply {
+            put("message", message)
+            put("session_id", sessionId)
+            put("player", org.json.JSONObject(player))
+        }
+        val request = Request.Builder()
+            .url(SettingsRepository.baseUrl() + "sprite/chat")
+            .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull()))
+            .build()
+
+        spriteClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                val detail = runCatching { response.body?.string() }.getOrNull().orEmpty()
+                throw IllegalStateException(
+                    if (response.code == 503) "精灵还在睡觉（服务端未配置模型）"
+                    else "精灵请求失败 ${response.code} ${detail.take(120)}"
+                )
+            }
+            val source = response.body?.source() ?: throw IllegalStateException("响应为空")
+            // 逐行读：ndjson 每行一个完整 JSON，遇到半包由 source.readUtf8Line 自行处理
+            while (true) {
+                val line = source.readUtf8Line() ?: break
+                val text = line.trim()
+                if (text.isEmpty()) continue
+                val event = runCatching {
+                    val obj = org.json.JSONObject(text)
+                    SpriteEvent(
+                        type = obj.optString("type"),
+                        text = obj.optString("text"),
+                        message = obj.optString("message"),
+                        command = obj.optJSONObject("data")
+                    )
+                }.getOrNull() ?: continue
+                onEvent(event)
+            }
+        }
     }
 
     fun resolveServerUrl(path: String?): String? {

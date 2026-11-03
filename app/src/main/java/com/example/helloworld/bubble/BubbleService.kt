@@ -18,7 +18,10 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.ImageView
-import android.widget.PopupMenu
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.platform.ComposeView
+import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.setViewTreeLifecycleOwner
 import com.example.helloworld.MainActivity
 import com.example.helloworld.ui.components.PetAnimationEngine
 import com.example.helloworld.ui.components.PetContentStore
@@ -40,12 +43,17 @@ import kotlin.math.abs
  *   （识曲·麦克风 / 识曲·系统声音 / 播放暂停 / 上一首 / 下一首 / 收起）。
  * - 识曲菜单会拉起 MainActivity 并把 mode 经 BubbleBus 交给 UI 层。
  */
-class BubbleService : Service() {
+class BubbleService : LifecycleService() {
 
     private lateinit var windowManager: WindowManager
     private var bubbleView: ImageView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
+    private var menuView: ComposeView? = null
+    private var menuParams: WindowManager.LayoutParams? = null
     private var species: String = "default"
+
+    /** 中心按钮显示播放还是暂停：由 UI 侧回来（BubbleBus.playbackState） */
+    private var isPlayingState: Boolean = false
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var frameJob: Job? = null
@@ -58,6 +66,7 @@ class BubbleService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
         if (intent?.action == ACTION_STOP) {
             stopSelf()
             return START_NOT_STICKY
@@ -68,9 +77,13 @@ class BubbleService : Service() {
         return START_STICKY
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    override fun onBind(intent: Intent): IBinder? {
+        super.onBind(intent)
+        return null
+    }
 
     override fun onDestroy() {
+        hideMenu()
         frameJob?.cancel()
         scope.coroutineContext[Job]?.cancel()
         bubbleView?.let { runCatching { windowManager.removeView(it) } }
@@ -169,31 +182,86 @@ class BubbleService : Service() {
     }
 
     private fun showMenu(anchor: View) {
-        val menu = PopupMenu(this, anchor)
-        menu.menu.add(0, MENU_RECOGNIZE_MIC, 1, "识曲 · 麦克风")
-        menu.menu.add(0, MENU_RECOGNIZE_SYSTEM, 2, "识曲 · 系统声音")
-        menu.menu.add(0, MENU_PLAY_PAUSE, 3, "播放 / 暂停")
-        menu.menu.add(0, MENU_PREV, 4, "上一首")
-        menu.menu.add(0, MENU_NEXT, 5, "下一首")
-        menu.menu.add(0, MENU_CLOSE, 6, "收起悬浮球")
-        menu.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                MENU_PLAY_PAUSE -> BubbleBus.send(BubbleBus.Command.PlayPause)
-                MENU_PREV -> BubbleBus.send(BubbleBus.Command.Previous)
-                MENU_NEXT -> BubbleBus.send(BubbleBus.Command.Next)
-                MENU_RECOGNIZE_MIC -> launchRecognize("mic")
-                MENU_RECOGNIZE_SYSTEM -> launchRecognize("system")
-                MENU_CLOSE -> BubbleBus.send(BubbleBus.Command.Close)
-            }
-            true
+        if (menuView != null) return
+        isPlayingState = BubbleBus.isPlaying
+        val params = layoutParams ?: return
+        val density = resources.displayMetrics.density
+        val size = (72 * density).toInt()
+        // 圆心取悬浮球当前中心
+        val cx = params.x + size / 2f
+        val cy = params.y + size / 2f
+            .coerceAtMost(resources.displayMetrics.heightPixels - size / 2f)
+        val overlayParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            },
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
         }
-        menu.show()
+        val view = ComposeView(this).apply {
+            setViewTreeLifecycleOwner(this@BubbleService)
+            setContent {
+                MaterialTheme {
+                    BubbleRingMenu(
+                        centerX = cx,
+                        centerY = cy,
+                        isPlaying = isPlayingState,
+                        onAction = { id -> onRingAction(id) },
+                        onDismiss = { hideMenu() }
+                    )
+                }
+            }
+        }
+        runCatching { windowManager.addView(view, overlayParams) }
+            .onFailure { hideMenu() }
+        menuView = view
+        menuParams = overlayParams
     }
 
-    private fun launchRecognize(mode: String) {
-        BubbleBus.requestRecognize(mode)
+    private fun hideMenu() {
+        val view = menuView ?: return
+        menuView = null
+        runCatching { windowManager.removeViewImmediate(view) }
+        menuParams = null
+    }
+
+    private fun onRingAction(id: String) {
+        when (id) {
+            BubbleRingItems.PLAY_PAUSE -> BubbleBus.send(BubbleBus.Command.PlayPause)
+            BubbleRingItems.PREV -> BubbleBus.send(BubbleBus.Command.Previous)
+            BubbleRingItems.NEXT -> BubbleBus.send(BubbleBus.Command.Next)
+            BubbleRingItems.RECOGNIZE_MIC -> {
+                BubbleBus.requestRecognize("mic")
+                launchAppForRecognize("mic")
+            }
+            BubbleRingItems.RECOGNIZE_SYSTEM -> {
+                BubbleBus.requestRecognize("system")
+                launchAppForRecognize("system")
+            }
+            BubbleRingItems.FAVORITE -> BubbleBus.send(BubbleBus.Command.Favorite)
+            BubbleRingItems.OPEN_APP -> BubbleBus.send(BubbleBus.Command.OpenApp)
+            BubbleRingItems.CLOSE -> BubbleBus.send(BubbleBus.Command.Close)
+        }
+    }
+
+    private fun launchAppForRecognize(mode: String) {
         val intent = Intent(this, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+            )
             putExtra(EXTRA_RECOGNIZE_MODE, mode)
         }
         runCatching { startActivity(intent) }

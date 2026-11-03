@@ -165,3 +165,40 @@ Compose 单 Activity 架构，音乐服务器是隔壁 `music_web`（接口前�
   `/api/search?source=youtube|soundcloud` 线上返回真实结果 200。
   详见 music_web knowledge/2026-10_server_ops.md。
 - 调试机当前装的是线上版全功能包；本机调试服务（192.168.2.16:8001）与线上（jvkit.cn）代码已同步。
+
+## 悬浮球 / @小精灵 / 定时关闭（2026-11，v1.6.0）
+
+- **悬浮球 = 小精灵本身**（`bubble/BubbleService`，前台服务 `specialUse` + `TYPE_APPLICATION_OVERLAY`）。
+  贴图走宠物 manifest 的 `boy`，动画由 `PetAnimationEngine` 纯 Kotlin 驱动（不依赖 Compose 重组），
+  帧解码走 `PetFrameCache` + `PetContentStore.frameFile`。
+  **单击 = 普通交互（播放/暂停 + 随机动作），拖动 = 移动，长按 = 环形菜单**。
+- **环形菜单**（`bubble/BubbleRingMenu.kt`）：长按在**悬浮球当前位置**为圆心展开，
+  不用 PopupMenu/Dialog，而是往 WindowManager 加一个全屏 `ComposeView`（`FLAG_NOT_FOCUSABLE`，
+  点空白 dismiss）。半径按圆心到四边的最小距离收（`coerceAtMost`），保证贴边也不出屏。
+  排布：中心=播放/暂停，左右=上一曲/下一曲，左上=识曲(手机内/系统内录)、右上=识曲(手机外/麦克风)、
+  左下=收藏、右下=进入软件、正下=关闭。命令统一走 `BubbleBus.Command`。
+- **ComposeView 挂在 Service 上必须先有 ViewTreeLifecycleOwner**：`BubbleService` 因此继承
+  `LifecycleService`（依赖 `androidx.lifecycle:lifecycle-service`），并 `setViewTreeLifecycleOwner(this)`。
+  只设 LifecycleOwner、不设 SavedStateRegistryOwner 就够用，别再去加 savedstate 的 setter（类型不匹配）。
+- **material-icons-core 里没有 Pause / MoreVert 以外的很多图标**：Pause 得手绘两条竖杠；
+  用某个图标前先 `unzip -l material-icons-core-*.jar | grep filled/` 确认有，否则编译报 Unresolved reference。
+- **属性 setter 与同名方法致命冲突**：`var bubbleEnabled` 自带 `setBubbleEnabled(Z)V`，
+  再写 `fun setBubbleEnabled` 会 `Platform declaration clash`（加不加 `private set` 都一样）。方法必须换名（`toggleBubble`）。
+- **@小精灵在聊天页里，不是独立入口**（`ui/im/ImScreens.kt` 的 `SpriteAsk` 逻辑 + `MainViewModel.askSprite`）：
+  输入框点 ★ 塞 `@小河灵`，带 @ 发送时①照常发给好友（对方也看得到）②同时本地调 `/api/sprite/chat`。
+  精灵回复存成 `msgType="sprite"` 的本地消息（**不发给对方**），气泡带小宠物头像和名字。
+  上下文拼在 `message` 里：最近 12 条纯文字聊天，每行 `说话人: 内容`，让精灵分得清两个用户；
+  再附当前播放器状态。会话 id 用 `im_<peer>`，服务端按 session 存历史（内存，重启即忘）。
+- **精灵下发的是事件流不是回复体**：ndjson 每行 `{type}`：
+  `reply`(text) / `player_command`(data.action ∈ play|pause|resume|next|prev，play 带 tracks) /
+  `recognize`(data.source) / `done` / `error`。**没有 fm、没有 play_pause**，别照 Web 端想当然。
+  客户端 `MusicApiClient.spriteChat` 用独立 okhttp client（readTimeout 120s，LLM 服务端上限 90s）
+  逐行 `source.readUtf8Line()` 读，半包由 okio 处理。
+- **定时关闭**（`playback/SleepTimer.kt`）：两种模式——倒计时（15/30/45/60/90 分钟）与「播完当前首」。
+  到点只 `playerController.pause()`，不退服务。状态**只存内存**（重启即失效是刻意的）。
+  「播完当前首」靠 `currentMediaId` 变化判切歌，在 ViewModel 的 mediaId collect 里调 `sleepTimer.onMediaChanged`。
+  入口：播放页顶栏 `MoreVert` + `SleepTimerPanel` 底部浮出。
+- **权限是系统设置页授权的，装完默认没有**：`SYSTEM_ALERT_WINDOW`（appops 显示 `ignore` 时悬浮球出不来，
+  可用 `adb shell appops set com.example.helloworld SYSTEM_ALERT_WINDOW allow` 临时开）。
+  设置弹窗里现在有 `ui/library/PermissionSection.kt` 权限自检：检测悬浮窗/麦克风/通知，
+  缺的点了直接跳对应系统页，`ON_RESUME` 回来自动刷新状态。

@@ -289,6 +289,9 @@ fun ChatScreen(viewModel: MainViewModel, peer: String) {
     val pet = pets[peer]
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    // @小精灵：输入框里出现 @ 时给一条点选提示
+    val spriteThinking = viewModel.spriteThinkingFor == peer
+    val petName = pet?.name?.takeIf { it.isNotBlank() } ?: "小河灵"
     // 宠物互动触发器：本地点击 / 对方 WS 云逗宠 各 +1 触发一次随机互动
     var petTrigger by remember { mutableLongStateOf(0L) }
     var petBubble by remember { mutableStateOf<String?>(null) }
@@ -411,7 +414,14 @@ fun ChatScreen(viewModel: MainViewModel, peer: String) {
                             adopted = pet != null,
                             onAccept = { viewModel.acceptAdopt(peer) }
                         )
+                        "sprite" -> SpriteBubble(text = msg.text, name = petName)
                         else -> ChatBubble(msg)
+                    }
+                }
+                // 精灵正在思考：给个「……」占位气泡
+                if (spriteThinking) {
+                    item(key = "sprite_thinking") {
+                        SpriteBubble(text = "", name = petName, thinking = true)
                     }
                 }
             }
@@ -438,6 +448,15 @@ fun ChatScreen(viewModel: MainViewModel, peer: String) {
                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // @小精灵：点一下把 @名字 塞进输入框
+                    IconButton(onClick = { input = "$input@$petName ".trimStart() }) {
+                        Icon(
+                            Icons.Default.Star,
+                            contentDescription = "@小精灵",
+                            tint = if (input.contains("@")) MaterialTheme.colorScheme.primary
+                            else Color.White.copy(alpha = 0.5f)
+                        )
+                    }
                     // 分享当前歌曲
                     IconButton(onClick = { viewModel.shareTrackTo(peer, currentTrack) }) {
                         Icon(Icons.Default.Favorite, contentDescription = "分享当前歌曲", tint = MaterialTheme.colorScheme.primary)
@@ -446,15 +465,30 @@ fun ChatScreen(viewModel: MainViewModel, peer: String) {
                         value = input,
                         onValueChange = { input = it },
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text("说点什么…", fontSize = 13.sp) },
+                        placeholder = {
+                            Text(
+                                if (pet != null) "说点什么…（@$petName 叫精灵）" else "说点什么…",
+                                fontSize = 13.sp
+                            )
+                        },
                         maxLines = 3
                     )
                     IconButton(
                         onClick = {
-                            viewModel.sendChat(peer, input)
+                            val text = input
+                            val mentionsSprite = text.contains("@$petName") || text.contains("@精灵")
+                            viewModel.sendChat(peer, text)
+                            if (mentionsSprite) {
+                                // 去掉 @前缀 再喂给精灵，正文才是真正的问题
+                                val question = text
+                                    .replace("@$petName", "")
+                                    .replace("@精灵", "")
+                                    .trim()
+                                viewModel.askSprite(peer, question, messages)
+                            }
                             input = ""
                         },
-                        enabled = input.isNotBlank()
+                        enabled = input.isNotBlank() && !spriteThinking
                     ) {
                         Icon(
                             Icons.AutoMirrored.Filled.Send,
@@ -715,6 +749,55 @@ private fun ChatBubble(msg: ImMessageEntity) {
                 color = if (msg.outgoing) Color.White else Color.White.copy(alpha = 0.92f),
                 fontSize = 14.sp
             )
+        }
+    }
+}
+
+/**
+ * 小精灵在聊天里的气泡：左边挂一个小精灵头像 + 名字，和人的聊天气泡区分开。
+ * thinking=true 时显示呼吸的「……」，等 LLM 回复期间占位。
+ */
+@Composable
+private fun SpriteBubble(text: String, name: String, thinking: Boolean = false) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start,
+        verticalAlignment = Alignment.Top
+    ) {
+        // 复用宠物头像（没素材时 UserAvatar 会退化成首字），小尺寸不抢戏
+        PetAvatar(
+            species = "default",
+            trigger = 0L,
+            size = 26.dp,
+            animate = !thinking
+        )
+        Column(modifier = Modifier.padding(start = 8.dp)) {
+            Text(
+                name,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Box(
+                modifier = Modifier
+                    .padding(top = 2.dp)
+                    .clip(RoundedCornerShape(4.dp, 18.dp, 18.dp, 18.dp))
+                    .background(
+                        Brush.linearGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.28f),
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                            )
+                        )
+                    )
+                    .padding(horizontal = 14.dp, vertical = 9.dp)
+            ) {
+                if (thinking) {
+                    Text("……", color = Color.White.copy(alpha = 0.6f), fontSize = 14.sp)
+                } else {
+                    Text(text, color = Color.White.copy(alpha = 0.95f), fontSize = 14.sp)
+                }
+            }
         }
     }
 }

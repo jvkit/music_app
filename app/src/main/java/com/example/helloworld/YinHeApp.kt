@@ -118,6 +118,14 @@ private fun YinHeMain(viewModel: MainViewModel, username: String) {
         }
     }
 
+    // 定时关闭到点：提示一次（气泡式的 Toast 最轻量，不打断当前界面）
+    LaunchedEffect(viewModel.sleepTimerFired) {
+        if (viewModel.sleepTimerFired) {
+            Toast.makeText(context, "定时关闭已生效，音乐已暂停", Toast.LENGTH_SHORT).show()
+            viewModel.clearSleepTimerFired()
+        }
+    }
+
     // 根返回：非首页 tab 先回首页；首页双击退出（防误触）；详情页/播放页各自 BackHandler 逐层返回
     BackHandler(enabled = viewModel.selectedPlaylistId == null && !viewModel.showNowPlaying) {
         if (viewModel.selectedTab != 0) {
@@ -339,7 +347,21 @@ private fun YinHeMain(viewModel: MainViewModel, username: String) {
                     onNext = viewModel::seekToNext,
                     onTogglePlayPause = viewModel::togglePlayPause,
                     onCycleRepeatMode = viewModel::cycleRepeatMode,
-                    onSeek = viewModel::seekTo
+                    onSeek = viewModel::seekTo,
+                    sleepTimerActive = viewModel.sleepTimerState.value !is com.example.helloworld.playback.SleepTimer.State.Off,
+                    sleepTimerLabel = when (val st = viewModel.sleepTimerState.value) {
+                        is com.example.helloworld.playback.SleepTimer.State.Counting -> {
+                            val mins = (st.remainMs / 60_000) + 1
+                            "还剩约 $mins 分钟自动暂停"
+                        }
+                        is com.example.helloworld.playback.SleepTimer.State.EndOfTrack -> "播完当前这首就暂停"
+                        else -> ""
+                    },
+                    onSleepTimer = { minutes ->
+                        if (minutes == 0) viewModel.startSleepTimerEndOfTrack()
+                        else viewModel.startSleepTimer(minutes)
+                    },
+                    onSleepTimerCancel = viewModel::cancelSleepTimer
                 )
             }
 
