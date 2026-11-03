@@ -71,6 +71,10 @@ class BubbleService : LifecycleService(), SavedStateRegistryOwner {
     @Volatile
     private var engineRef: PetAnimationEngine? = null
 
+    /** 引擎还没就绪时（素材下载中）用户点的那些击，就绪后补播一次 */
+    @Volatile
+    private var pendingTap: Boolean = false
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var frameJob: Job? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -199,17 +203,18 @@ class BubbleService : LifecycleService(), SavedStateRegistryOwner {
     }
 
     /**
-     * 单击悬浮球：先让精灵播一次互动动作（视觉反馈），再切换播放/暂停。
+     * 单击悬浮球 = 和精灵互动：只播一次随机互动动作，**不动播放状态**。
+     * 播放/暂停、上一首下一首全部收在长按的环形菜单里。
      *
-     * 关键：不能只发 BubbleBus 事件——桌面场景下 MainActivity 可能已销毁、没有订阅者，
-     * 事件会被静默丢弃，表现为"点了完全没反应"。这里直接对播放器下命令。
+     * 首次启动要等素材下载完引擎才就绪，这期间的点击先记下、就绪后补播一次，
+     * 否则"刚开悬浮球时点了没反应"。
      */
     private fun onBubbleTapped() {
-        engineRef?.tap()
-        scope.launch {
-            val c = connectController() ?: return@launch
-            if (c.mediaItemCount == 0) return@launch
-            if (c.isPlaying) c.pause() else c.play()
+        val engine = engineRef
+        if (engine != null) {
+            engine.tap()
+        } else {
+            pendingTap = true
         }
     }
 
@@ -295,9 +300,33 @@ class BubbleService : LifecycleService(), SavedStateRegistryOwner {
 
     private fun onRingAction(id: String) {
         when (id) {
-            BubbleRingItems.PLAY_PAUSE -> BubbleBus.send(BubbleBus.Command.PlayPause)
-            BubbleRingItems.PREV -> BubbleBus.send(BubbleBus.Command.Previous)
-            BubbleRingItems.NEXT -> BubbleBus.send(BubbleBus.Command.Next)
+            // 播放控制直连播放器：桌面场景下 App 可能没活、BubbleBus 没有订阅者，
+            // 发事件会被静默丢弃（“点了没反应”的老问题）
+            BubbleRingItems.PLAY_PAUSE -> scope.launch {
+                val c = connectController() ?: return@launch
+                if (c.mediaItemCount == 0) return@launch
+                if (c.isPlaying) c.pause() else c.play()
+            }
+            BubbleRingItems.PREV -> scope.launch {
+                val c = connectController() ?: return@launch
+                if (c.mediaItemCount == 0) return@launch
+                if (c.currentMediaItemIndex == 0) {
+                    c.seekTo(c.mediaItemCount - 1, 0L)
+                } else {
+                    c.seekToPreviousMediaItem()
+                }
+                c.prepare()
+                c.playWhenReady = true
+            }
+            BubbleRingItems.NEXT -> scope.launch {
+                val c = connectController() ?: return@launch
+                if (c.mediaItemCount == 0) return@launch
+                if (c.hasNextMediaItem() || c.repeatMode == androidx.media3.common.Player.REPEAT_MODE_ALL) {
+                    c.seekToNextMediaItem()
+                    c.prepare()
+                    c.playWhenReady = true
+                }
+            }
             BubbleRingItems.RECOGNIZE_MIC -> {
                 BubbleBus.requestRecognize("mic")
                 launchAppForRecognize("mic")
@@ -306,6 +335,7 @@ class BubbleService : LifecycleService(), SavedStateRegistryOwner {
                 BubbleBus.requestRecognize("system")
                 launchAppForRecognize("system")
             }
+            // 收藏要碰本地收藏库，只能交回 App 进程处理
             BubbleRingItems.FAVORITE -> BubbleBus.send(BubbleBus.Command.Favorite)
             BubbleRingItems.OPEN_APP -> launchApp()
             BubbleRingItems.CLOSE -> BubbleBus.send(BubbleBus.Command.Close)
@@ -356,6 +386,11 @@ class BubbleService : LifecycleService(), SavedStateRegistryOwner {
                 sellable = PetContentStore.sellableClips(characterId)
             )
             engineRef = engine
+            // 引擎就绪前用户点过的，补播一次互动
+            if (pendingTap) {
+                pendingTap = false
+                engine.tap()
+            }
             var lastNanos = 0L
             var lastReq: Pair<Int, Int>? = null
             while (true) {
