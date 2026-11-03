@@ -836,36 +836,73 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** 系统内录识曲（data = 屏幕捕获授权返回的 Intent） */
+    /**
+     * 缓存的投影会话。Android 的「系统内录」必须经 MediaProjection（AudioPlaybackCapture 的唯一构造入口），
+     * 但**不必每次识别都弹一次共享屏幕**：授权一次后把会话留着反复建 AudioRecord 即可，
+     * 只有会话被 stop/系统回收时才需要重新授权。
+     *
+     * 注意 Android 14+ 对 MediaProjection 有额外限制（每次 getMediaProjection 同一 token 只能用一次），
+     * 所以这里同时缓存返回的 Intent，失效时用缓存的 Intent 重连，仍失败才回到用户重新授权。
+     */
+    private var cachedProjection: android.media.projection.MediaProjection? = null
+    private var cachedProjectionIntent: android.content.Intent? = null
+
+    /** 投影是否还可用 */
+    fun hasSystemCaptureSession(): Boolean = cachedProjection != null
+
     fun startSystemRecognize(projectionData: android.content.Intent?) {
-        if (!AudioCaptures.canCaptureSystemAudio() || projectionData == null) {
+        if (!AudioCaptures.canCaptureSystemAudio()) {
             recognizePhase = "done"
-            recognizeError = "系统内录需要 Android 10 及以上，且要先授权捕获"
+            recognizeError = "系统内录需要 Android 10 及以上"
             return
         }
         val manager = app.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE)
             as android.media.projection.MediaProjectionManager
-        val projection = runCatching {
-            manager.getMediaProjection(android.app.Activity.RESULT_OK, projectionData)
-        }.getOrNull()
+
+        // 优先复用已有会话；没有再用新授权（或上次缓存）的数据建一个
+        var projection = cachedProjection
         if (projection == null) {
-            recognizePhase = "done"
-            recognizeError = "没能建立音频捕获会话"
-            return
+            val data = projectionData ?: cachedProjectionIntent
+            if (data == null) {
+                recognizePhase = "done"
+                recognizeError = "需要先授权一次系统音频捕获"
+                return
+            }
+            projection = runCatching {
+                manager.getMediaProjection(android.app.Activity.RESULT_OK, data)
+            }.getOrNull()
+            if (projection == null) {
+                recognizePhase = "done"
+                recognizeError = "没能建立音频捕获会话，请重新授权"
+                // 缓存失效，清掉让 UI 重新要授权
+                cachedProjectionIntent = null
+                return
+            }
+            cachedProjection = projection
+            cachedProjectionIntent = data
+            // 会话意外结束时清缓存，下次会自动重新授权
+            projection.registerCallback(object : android.media.projection.MediaProjection.Callback() {
+                override fun onStop() {
+                    cachedProjection = null
+                }
+            }, android.os.Handler(android.os.Looper.getMainLooper()))
         }
+
         val gen = ++recognizeGen
         recognizePhase = "recording"
         recognizeProgress = 0f
         recognizeResults = emptyList()
         recognizeError = null
+        val session = projection
         viewModelScope.launch {
             val wav = withContext(Dispatchers.IO) {
-                AudioCaptures.recordSystem(projection) { p ->
+                AudioCaptures.recordSystem(session) { p ->
                     viewModelScope.launch(Dispatchers.Main) {
                         if (gen == recognizeGen) recognizeProgress = p
                     }
                 }
             }
-            runCatching { projection.stop() }
+            // 录音结束**不** stop 投影：保留会话供下次识别复用（这是省掉重复弹窗的关键）
             if (gen != recognizeGen) return@launch
             if (wav == null) {
                 withContext(Dispatchers.Main) {
@@ -913,11 +950,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         toggleBubble(true)
     }
 
+    /** 把当前角色的解锁动作同步给悬浮球，并让已运行的悬浮球重建引擎 */
+    private fun syncBubbleUnlocked(species: String?) {
+        val unlocked = species?.let { pets.value.values.firstOrNull { p -> p.species == it } }
+            ?.actionUnlocks?.get(species).orEmpty().toSet()
+        com.example.helloworld.bubble.BubbleBus.unlockedActions = unlocked
+    }
+
     fun toggleBubble(enabled: Boolean) {
         if (enabled) {
             val species = pets.value.values.firstOrNull()?.species ?: "default"
+            syncBubbleUnlocked(species)
+            com.example.helloworld.playback.YinheLogger.log("悬浮球", "启动服务 species=$species")
             BubbleService.start(app, species)
         } else {
+            com.example.helloworld.playback.YinheLogger.log("悬浮球", "停止服务")
             BubbleService.stop(app)
         }
         bubbleEnabled = enabled
@@ -2373,6 +2420,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     refreshPetShop(peer)
                     // 悬浮球跟着换形象：服务已在跑的话，重启一次让它切物种
                     withContext(Dispatchers.Main) {
+                        syncBubbleUnlocked(species)
                         if (bubbleEnabled) {
                             BubbleService.start(app, species)
                         }

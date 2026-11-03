@@ -129,7 +129,12 @@ private fun YinHeMain(viewModel: MainViewModel, username: String) {
     // 悬浮球默认常驻：有悬浮窗权限就自动起（用户手动关过就不再自动起）
     LaunchedEffect(Unit) {
         val prefs = context.getSharedPreferences("yinhe_bubble", android.content.Context.MODE_PRIVATE)
-        if (prefs.getBoolean("enabled", true)) {
+        val enabledPref = prefs.getBoolean("enabled", true)
+        val canOverlay = android.provider.Settings.canDrawOverlays(context)
+        com.example.helloworld.playback.YinheLogger.log(
+            "悬浮球", "自动启动检查 enabled=$enabledPref canOverlay=$canOverlay"
+        )
+        if (enabledPref) {
             viewModel.autoStartBubble()
         }
     }
@@ -378,6 +383,14 @@ private fun YinHeMain(viewModel: MainViewModel, username: String) {
             // 识曲页（全屏层级，位于播放页之上、IM 之下）
             if (viewModel.showRecognize) {
                 RecognizeScreen(viewModel)
+            }
+
+            // 识曲状态小窗：没开全屏识曲页时（比如从悬浮球静默起录），
+            // 让用户看得见"在录/在识别/结果"，否则完全无感
+            if (!viewModel.showRecognize) {
+                Box(modifier = Modifier.align(Alignment.TopCenter)) {
+                    com.example.helloworld.ui.recognize.RecognizeStatusChip(viewModel)
+                }
             }
 
             // IM 页面层级最高（好友/聊天）

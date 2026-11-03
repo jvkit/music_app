@@ -140,10 +140,11 @@ object PetContentStore {
                             .filter { it.clip.isNotBlank() }
                             .groupBy { it.character }
                             .mapValues { (_, list) -> list.map { it.clip }.toSet() }
-                        // 清单里标了 builtin 的角色用内置帧（boy 离线兜底）
-                        characters = map.mapValues { (id, def) ->
-                            if (id == "boy" && def.builtin) BOY else def
-                        }
+                        // 所有角色一视同仁：清单里有定义就用清单的。
+                        // builtin 只表示"帧从 assets 读，不下载 zip"（boy），
+                        // 不再把 boy 整个替换成内置常量——那样角色/动作/权重全走内置默认值，
+                        // 和鲸鱼/大肥鱼的行为不对等（买了动作、改了 roles 在 boy 上都不生效）。
+                        characters = map
                     }
             }
         } finally {

@@ -393,7 +393,8 @@ class BubbleService : LifecycleService(), SavedStateRegistryOwner {
                 behaviors = character.behaviors,
                 defaultFps = character.fps,
                 starter = character.starter.toSet(),
-                unlocked = emptySet(),
+                // 已购买的动作：悬浮球和 App 里用的是同一份解锁表，否则点来点去只有 starter
+                unlocked = BubbleBus.unlockedActions,
                 // 已购买的动作才允许播；和 App 内宠物页保持一致，否则会触发未购买素材的下载
                 sellable = PetContentStore.sellableClips(characterId)
             )
@@ -435,7 +436,17 @@ class BubbleService : LifecycleService(), SavedStateRegistryOwner {
                 return bmp
             }
         }
-        return null
+        // 兜底：内置 boy 没有 zip 素材（builtin=true、acts=[]），帧打包在 assets 里。
+        // 少了这段，切到小河灵时悬浮球会一直空白，这也是"只有鲸鱼能显示、切 boy 切不出来"的原因。
+        val pattern = "pet/boy/inspect/act$act/frames/frame_%04d.webp"
+        val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+        return runCatching {
+            assets.open(String.format(java.util.Locale.US, pattern, idx)).use { stream ->
+                val bmp = BitmapFactory.decodeStream(stream, null, opts)
+                if (bmp != null) PetFrameCache.put(key, bmp)
+                bmp
+            }
+        }.getOrNull()
     }
 
     // ===================== 通知 =====================

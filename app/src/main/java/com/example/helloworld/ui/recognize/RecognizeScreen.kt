@@ -103,6 +103,11 @@ fun RecognizeScreen(viewModel: MainViewModel) {
 
     fun requestSystem() {
         if (!AudioCaptures.canCaptureSystemAudio()) return
+        // 已经授权过就直接开录，本次不再弹「共享屏幕」
+        if (viewModel.hasSystemCaptureSession()) {
+            viewModel.startSystemRecognize(null)
+            return
+        }
         val manager = context.getSystemService(MediaProjectionManager::class.java)
         projectionLauncher.launch(manager.createScreenCaptureIntent())
     }

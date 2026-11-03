@@ -39,6 +39,8 @@ class PetAnimationEngine(
 
     private var clipName: String? = null
     private var framePos = 0f
+    /** 当前动作已播放时长（秒），用于「动作播放 0.5s 后允许被下一次点击打断」 */
+    private var actionElapsed = 0f
     private var frameDir = 1
     private var looping = true
     private var pingpong = false
@@ -74,7 +76,22 @@ class PetAnimationEngine(
                 }
                 playOnce(name)
             }
-            Phase.ACTION -> Unit // 动作中不打断
+            Phase.ACTION -> {
+                // 动作播放中：超过 0.5s 就允许被打断，换下一个动作。
+                // 大部分动作有好几秒，不让打断的话连点只能一直看着同一个播完，也没法快速试动作。
+                if (actionElapsed >= INTERRUPT_AFTER) {
+                    val preferred = roles.click.filter(::allowed)
+                    val pool = playableClips()
+                    if (pool.isNotEmpty()) {
+                        val name = if (preferred.isNotEmpty() && rnd.nextFloat() < 0.7f) {
+                            preferred.random(rnd)
+                        } else {
+                            pool.random(rnd)
+                        }
+                        playOnce(name)
+                    }
+                }
+            }
         }
     }
 
@@ -101,9 +118,17 @@ class PetAnimationEngine(
     fun advance(dt: Float) {
         when (phase) {
             Phase.SLEEP -> advanceSleep(dt)
-            Phase.ACTION -> advanceAction(dt)
+            Phase.ACTION -> {
+                actionElapsed += dt
+                advanceAction(dt)
+            }
             Phase.IDLE -> advanceIdle(dt)
         }
+    }
+
+    companion object {
+        /** 动作播放多久后允许被下一次点击打断（秒） */
+        const val INTERRUPT_AFTER = 0.5f
     }
 
     // ===================== idle =====================
@@ -178,6 +203,7 @@ class PetAnimationEngine(
     private fun playOnce(name: String) {
         val c = clips[name] ?: return
         phase = Phase.ACTION
+        actionElapsed = 0f
         clipName = name
         framePos = if (c.mode == "reverse") (c.end - c.start).toFloat() else 0f
         frameDir = if (c.mode == "reverse") -1 else 1

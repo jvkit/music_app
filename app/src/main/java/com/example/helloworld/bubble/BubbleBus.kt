@@ -32,6 +32,10 @@ object BubbleBus {
     @Volatile
     var hasTrack: Boolean = false
 
+    /** 当前角色已购买/已解锁的动作：悬浮球引擎靠它决定点击/随机能播哪些 */
+    @Volatile
+    var unlockedActions: Set<String> = emptySet()
+
     /**
      * 冷启动兜底：Activity 在 Compose 订阅前收到 intent 时，把模式存在这里，
      * 由 YinHeApp 首次组合时消费（SharedFlow 无 replay，不能只靠 emit）。
