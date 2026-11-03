@@ -212,7 +212,7 @@ fun RecognizeScreen(viewModel: MainViewModel) {
                 )
                 runCatching { overlayLauncher.launch(intent) }
             },
-            onToggle = { viewModel.setBubbleEnabled(it) }
+            onToggle = { viewModel.toggleBubble(it) }
         )
         Spacer(Modifier.height(20.dp))
     }

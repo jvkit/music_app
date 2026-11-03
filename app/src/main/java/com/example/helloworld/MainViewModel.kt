@@ -65,6 +65,8 @@ import kotlinx.coroutines.withContext
 import retrofit2.HttpException
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
+    /** 上游代码直接用 application 调系统服务 / 起服务，而 AndroidViewModel 的 application 是 private，这里显式暴露 */
+    private val app: Application = application
     private val database = YinHeDatabase.getInstance(application)
     private val repository = PlaylistRepository(database.playlistDao(), database.playlistTrackDao())
     private val favoritesRepository = FavoritesRepository(database.favoriteTrackDao())
@@ -787,7 +789,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             recognizeError = "系统内录需要 Android 10 及以上，且要先授权捕获"
             return
         }
-        val manager = application.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE)
+        val manager = app.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE)
             as android.media.projection.MediaProjectionManager
         val projection = runCatching {
             manager.getMediaProjection(android.app.Activity.RESULT_OK, projectionData)
@@ -845,15 +847,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ===================== 悬浮球（小精灵） =====================
 
+    /** 开关悬浮球：属性自带同签名 setter，方法必须换名，否则 JVM 签名冲突 */
     var bubbleEnabled by mutableStateOf(false)
-        private set
 
-    fun setBubbleEnabled(enabled: Boolean) {
+    fun toggleBubble(enabled: Boolean) {
         if (enabled) {
             val species = pets.value.values.firstOrNull()?.species ?: "default"
-            BubbleService.start(application, species)
+            BubbleService.start(app, species)
         } else {
-            BubbleService.stop(application)
+            BubbleService.stop(app)
         }
         bubbleEnabled = enabled
     }
@@ -866,7 +868,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             BubbleBus.Command.Previous -> seekToPrevious()
             BubbleBus.Command.RecognizeMic -> openRecognize("mic")
             BubbleBus.Command.RecognizeSystem -> openRecognize("system")
-            BubbleBus.Command.Close -> setBubbleEnabled(false)
+            BubbleBus.Command.Close -> toggleBubble(false)
         }
     }
 

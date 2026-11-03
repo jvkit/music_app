@@ -53,7 +53,7 @@ import com.example.helloworld.ui.home.Track
 
 /**
  * 发现页：私人 FM + 官方榜单 + 分类歌单墙 + 歌单详情
- * 数据全部来自服务端 /api/discover/*（网易云公开元数据代理），播放走现有 playTrack 链路。
+ * 数据全部来自服务端 /api/discover/ 系列接口（网易云公开元数据代理），播放走现有 playTrack 链路。
  */
 @Composable
 fun DiscoverScreen(viewModel: MainViewModel) {
