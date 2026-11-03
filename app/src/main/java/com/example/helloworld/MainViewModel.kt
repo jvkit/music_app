@@ -419,6 +419,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         SettingsRepository.init(application)
         AuthRepository.init(application)
+        // 冷启动把上次的队列装回播放器，否则播放条有歌但队列是空的、怎么点都没反应
+        restorePlaybackState()
         viewModelScope.launch {
             playerController.isPlaying.collect {
                 isPlaying = it
@@ -1119,9 +1121,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         currentTrack = track
         playerController.playQueue(playQueue, startIndex)
+        persistPlaybackState(playQueue, startIndex)
         if (listenHosting && !applyingListenState) {
             listenRev++
             reportListenStateNow()
+        }
+    }
+
+    // ===================== 播放状态持久化 =====================
+
+    /**
+     * 记住"上次听的那首 + 队列"。
+     *
+     * 播放服务被系统回收后队列是空的，但 UI 的 currentTrack 还在内存里，
+     * 于是出现「播放条显示某首歌、点播放/上一首/下一首全都没反应」——
+     * 因为那些操作都作用在空队列上。重启时用这份记录把队列重建回来。
+     */
+    private fun persistPlaybackState(queue: List<Track>, index: Int) {
+        runCatching {
+            val json = com.google.gson.Gson().toJson(
+                mapOf(
+                    "index" to index,
+                    "tracks" to queue.mapNotNull { it.apiTrack }
+                )
+            )
+            app.getSharedPreferences("yinhe_last_playback", android.content.Context.MODE_PRIVATE)
+                .edit().putString("state", json).apply()
+        }
+    }
+
+    /** 冷启动恢复上次队列：队列为空时调用，让播放器重新持有可播的队列 */
+    private fun restorePlaybackState() {
+        val raw = app.getSharedPreferences("yinhe_last_playback", android.content.Context.MODE_PRIVATE)
+            .getString("state", null) ?: return
+        runCatching {
+            val obj = com.google.gson.JsonParser.parseString(raw).asJsonObject
+            val index = obj.get("index")?.asInt ?: 0
+            val arr = obj.getAsJsonArray("tracks") ?: return
+            val tracks = arr.mapNotNull { el ->
+                runCatching {
+                    com.google.gson.Gson().fromJson(
+                        el, com.example.helloworld.data.remote.ApiTrack::class.java
+                    ).toUiTrack()
+                }.getOrNull()
+            }
+            if (tracks.isEmpty()) return
+            // 只重建队列，不自动播放：用户点播放就能接上，不会再"点不动"
+            val safeIndex = index.coerceIn(0, tracks.lastIndex)
+            currentTrack = tracks[safeIndex]
+            queueById = tracks.associateBy { it.id }
+            playerController.restoreQueue(tracks, safeIndex)
         }
     }
 
@@ -2322,6 +2371,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .onSuccess { p ->
                     pets.value = pets.value + (peer to p)
                     refreshPetShop(peer)
+                    // 悬浮球跟着换形象：服务已在跑的话，重启一次让它切物种
+                    withContext(Dispatchers.Main) {
+                        if (bubbleEnabled) {
+                            BubbleService.start(app, species)
+                        }
+                    }
                 }
         }
     }

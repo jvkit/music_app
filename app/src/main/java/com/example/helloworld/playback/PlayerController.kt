@@ -151,6 +151,19 @@ class PlayerController(
 
     fun playQueue(tracks: List<Track>, startIndex: Int) {
         if (tracks.isEmpty()) return
+        loadQueue(tracks, startIndex, autoPlay = true)
+    }
+
+    /**
+     * 冷启动恢复队列：只装载、prepare 到可播状态，**不自动播放**。
+     * 这样播放条的播放/上一首/下一首都有真实队列可操作，不会"点了没反应"。
+     */
+    fun restoreQueue(tracks: List<Track>, startIndex: Int) {
+        if (tracks.isEmpty()) return
+        loadQueue(tracks, startIndex, autoPlay = false)
+    }
+
+    private fun loadQueue(tracks: List<Track>, startIndex: Int, autoPlay: Boolean) {
         val safeIndex = startIndex.coerceIn(0, tracks.lastIndex)
         TrackPayloadStore.putAll(tracks.associate { it.id to it.apiTrack })
         val items = tracks.map { track ->
@@ -172,7 +185,7 @@ class PlayerController(
         withController { c ->
             c.setMediaItems(items, safeIndex, C.TIME_UNSET)
             c.prepare()
-            c.playWhenReady = true
+            c.playWhenReady = autoPlay
         }
     }
 

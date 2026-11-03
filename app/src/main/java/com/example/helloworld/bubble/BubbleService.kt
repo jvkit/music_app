@@ -92,11 +92,23 @@ class BubbleService : LifecycleService(), SavedStateRegistryOwner {
             stopSelf()
             return START_NOT_STICKY
         }
-        species = intent?.getStringExtra(EXTRA_SPECIES) ?: species
+        val incoming = intent?.getStringExtra(EXTRA_SPECIES)
+        val speciesChanged = incoming != null && incoming != species
+        if (incoming != null) species = incoming
         startForeground(NOTIFICATION_ID, buildNotification())
-        if (bubbleView == null) showBubble()
+        // 自愈：服务还活着但悬浮窗被系统回收（灭屏/切换器/权限变更常见）时重新挂上
+        if (bubbleView == null || !isBubbleAttached()) {
+            bubbleView?.let { runCatching { windowManager.removeViewImmediate(it) } }
+            bubbleView = null
+            showBubble()
+        } else if (speciesChanged) {
+            // 切换共养角色后悬浮球要跟着换形象：重建帧循环（贴图不同，必须重开）
+            bubbleView?.let { startFrameLoop(it) }
+        }
         return START_STICKY
     }
+
+    private fun isBubbleAttached(): Boolean = bubbleView?.isAttachedToWindow == true
 
     override fun onBind(intent: Intent): IBinder? {
         super.onBind(intent)
