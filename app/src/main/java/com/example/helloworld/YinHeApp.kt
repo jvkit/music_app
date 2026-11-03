@@ -37,11 +37,13 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -60,6 +62,7 @@ import com.example.helloworld.ui.home.HomeScreen
 import com.example.helloworld.ui.library.MyScreen
 import com.example.helloworld.ui.library.PlaylistDetailScreen
 import com.example.helloworld.ui.player.NowPlayingScreen
+import com.example.helloworld.ui.recognize.RecognizeScreen
 
 @Composable
 fun YinHeApp(viewModel: MainViewModel = viewModel()) {
@@ -97,6 +100,23 @@ private fun YinHeMain(viewModel: MainViewModel, username: String) {
 
     val context = LocalContext.current
     var lastBackMs by remember { mutableLongStateOf(0L) }
+
+    // 悬浮球命令（同一进程内服务 → UI）；识曲请求自动拉起因悬浮球菜单触发
+    LaunchedEffect(Unit) {
+        com.example.helloworld.bubble.BubbleBus.takePendingRecognize()?.let { mode ->
+            viewModel.openRecognize(mode)
+        }
+        launch {
+            com.example.helloworld.bubble.BubbleBus.commands.collect { command ->
+                viewModel.onBubbleCommand(command)
+            }
+        }
+        launch {
+            com.example.helloworld.bubble.BubbleBus.recognizeRequests.collect { mode ->
+                viewModel.openRecognize(mode)
+            }
+        }
+    }
 
     // 根返回：非首页 tab 先回首页；首页双击退出（防误触）；详情页/播放页各自 BackHandler 逐层返回
     BackHandler(enabled = viewModel.selectedPlaylistId == null && !viewModel.showNowPlaying) {
@@ -198,8 +218,10 @@ private fun YinHeMain(viewModel: MainViewModel, username: String) {
                             }
                         }
                     } else if (currentDestination == "tab:1") {
-                        com.example.helloworld.ui.pet.PetScreen(viewModel)
+                        com.example.helloworld.ui.discover.DiscoverScreen(viewModel)
                     } else if (currentDestination == "tab:2") {
+                        com.example.helloworld.ui.pet.PetScreen(viewModel)
+                    } else if (currentDestination == "tab:3") {
                         MyScreen(
                             playlists = playlists,
                             favoriteCount = favoriteTracks.size,
@@ -258,7 +280,7 @@ private fun YinHeMain(viewModel: MainViewModel, username: String) {
             }
 
             // 精灵投喂页展开态：整屏只留角色，隐藏迷你播放器与底部导航
-            if (!(viewModel.selectedTab == 1 && viewModel.petFullscreen)) {
+            if (!(viewModel.selectedTab == 2 && viewModel.petFullscreen)) {
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -319,6 +341,11 @@ private fun YinHeMain(viewModel: MainViewModel, username: String) {
                     onCycleRepeatMode = viewModel::cycleRepeatMode,
                     onSeek = viewModel::seekTo
                 )
+            }
+
+            // 识曲页（全屏层级，位于播放页之上、IM 之下）
+            if (viewModel.showRecognize) {
+                RecognizeScreen(viewModel)
             }
 
             // IM 页面层级最高（好友/聊天）

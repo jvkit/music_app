@@ -17,6 +17,8 @@ import com.example.helloworld.data.local.YinHeDatabase
 import com.example.helloworld.data.model.Playlist
 import com.example.helloworld.data.remote.ApiTrack
 import com.example.helloworld.data.remote.AuthRequest
+import com.example.helloworld.data.remote.DiscoverCategory
+import com.example.helloworld.data.remote.DiscoverPlaylistDto
 import com.example.helloworld.data.remote.FriendRequest
 import com.example.helloworld.data.remote.MusicApiClient
 import com.example.helloworld.data.remote.PetEventRequest
@@ -38,6 +40,9 @@ import com.example.helloworld.data.remote.toUiTrack
 import com.example.helloworld.playback.AsyncListState
 import com.example.helloworld.playback.PlayerController
 import com.example.helloworld.playback.TrackPayloadStore
+import com.example.helloworld.ui.recognize.AudioCaptures
+import com.example.helloworld.bubble.BubbleBus
+import com.example.helloworld.bubble.BubbleService
 import com.example.helloworld.playback.YinheLogger
 import com.example.helloworld.ui.home.PlaceholderTrack
 import com.example.helloworld.ui.home.Track
@@ -330,6 +335,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     var searchState by mutableStateOf(AsyncListState<Track>())
         private set
+
+    // ===================== 发现页（榜单/分类歌单墙/歌单详情/私人FM） =====================
+
+    var discoverCategories by mutableStateOf<List<DiscoverCategory>>(emptyList())
+        private set
+
+    /** 当前分类（特殊值 personalized=为你推荐、hq=精品） */
+    var discoverCat by mutableStateOf("personalized")
+        private set
+    var discoverToplists by mutableStateOf(AsyncListState<DiscoverPlaylistDto>())
+        private set
+    var discoverWall by mutableStateOf(AsyncListState<DiscoverPlaylistDto>())
+        private set
+
+    /** 歌单/榜单/FM 详情展开态；null=回到歌单墙 */
+    var discoverDetail by mutableStateOf<DiscoverDetailUi?>(null)
+        private set
+
+    data class DiscoverDetailUi(
+        val loading: Boolean = false,
+        val playlist: DiscoverPlaylistDto? = null,
+        val tracks: List<Track> = emptyList()
+    )
     var serverUrl by mutableStateOf(SettingsRepository.baseUrl())
         private set
     var selectedSearchSource by mutableStateOf(SourceCatalog.AUTO)
@@ -536,12 +564,310 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun selectTab(index: Int) {
         selectedTab = index
         selectedPlaylistId = null
-        if (index != 1) petFullscreen = false
+        if (index == 1) ensureDiscoverLoaded()
+        if (index != 2) petFullscreen = false
     }
 
     fun openPlaylist(id: String) {
-        selectedTab = 2
+        selectedTab = 3
         selectedPlaylistId = id
+    }
+
+    // ===================== 发现页 =====================
+
+    private var discoverInited = false
+
+    /** 歌单墙代次：切分类后旧请求的迟到结果直接丢弃 */
+    private var discoverWallGeneration = 0
+
+    fun ensureDiscoverLoaded() {
+        if (discoverInited) return
+        discoverInited = true
+        loadDiscoverCategories()
+        loadDiscoverToplists()
+        loadDiscoverWall()
+    }
+
+    private fun loadDiscoverCategories() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val cats = runCatching { api.discoverCategories().categories }.getOrDefault(emptyList())
+            withContext(Dispatchers.Main) {
+                if (discoverCategories.isEmpty() && cats.isNotEmpty()) discoverCategories = cats
+            }
+        }
+    }
+
+    private fun loadDiscoverToplists() {
+        discoverToplists = discoverToplists.copy(loading = true, error = null)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val items = api.discoverToplists().items
+                    .filter { it.id != 0L && it.name.isNotBlank() }
+                    .distinctBy { it.id }
+                withContext(Dispatchers.Main) {
+                    discoverToplists = AsyncListState(items = items)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    discoverToplists = discoverToplists.copy(loading = false, error = e.message ?: "榜单加载失败")
+                }
+            }
+        }
+    }
+
+    fun selectDiscoverCat(id: String) {
+        if (discoverCat == id) return
+        discoverCat = id
+        discoverDetail = null
+        loadDiscoverWall()
+    }
+
+    private fun loadDiscoverWall() {
+        discoverWallGeneration++
+        val gen = discoverWallGeneration
+        discoverWall = AsyncListState(loading = true, items = emptyList(), error = null)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val items = api.discoverPlaylists(cat = discoverCat).items
+                    .filter { it.id != 0L && it.name.isNotBlank() }
+                    .distinctBy { it.id }
+                withContext(Dispatchers.Main) {
+                    if (gen == discoverWallGeneration) discoverWall = AsyncListState(items = items)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    if (gen == discoverWallGeneration) {
+                        discoverWall = discoverWall.copy(loading = false, error = e.message ?: "歌单加载失败")
+                    }
+                }
+            }
+        }
+    }
+
+    /** 失败重试入口（加载失败时按钮调用） */
+    fun refreshDiscoverWall() = loadDiscoverWall()
+
+    fun openDiscoverPlaylist(id: Long) {
+        discoverDetail = DiscoverDetailUi(loading = true)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val response = api.discoverPlaylist(id)
+                val tracks = response.tracks.map { it.toUiTrack() }.distinctBy { it.id }
+                withContext(Dispatchers.Main) {
+                    discoverDetail = DiscoverDetailUi(playlist = response.playlist, tracks = tracks)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    discoverDetail = null
+                    discoverWall = discoverWall.copy(error = e.message ?: "歌单打开失败")
+                }
+            }
+        }
+    }
+
+    fun closeDiscoverDetail() {
+        discoverDetail = null
+    }
+
+    /** 私人 FM：拉一首随机推荐，直接进详情态并开播 */
+    fun playDiscoverFm() {
+        discoverDetail = DiscoverDetailUi(loading = true)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val tracks = api.discoverFm().tracks.map { it.toUiTrack() }
+                withContext(Dispatchers.Main) {
+                    if (tracks.isEmpty()) {
+                        discoverDetail = null
+                        discoverWall = discoverWall.copy(error = "私人 FM 暂无返回")
+                        return@withContext
+                    }
+                    discoverDetail = DiscoverDetailUi(
+                        playlist = DiscoverPlaylistDto(name = "私人 FM", description = "来自网易云的随机推荐"),
+                        tracks = tracks
+                    )
+                    playTrack(tracks.first(), tracks)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    discoverDetail = null
+                    discoverWall = discoverWall.copy(error = e.message ?: "私人 FM 暂时不可用")
+                }
+            }
+        }
+    }
+
+    fun playDiscoverAll() {
+        val detail = discoverDetail ?: return
+        if (detail.tracks.isEmpty()) return
+        playTrack(detail.tracks.first(), detail.tracks)
+    }
+
+    // ===================== 听歌识曲（麦克风 / 系统内录） =====================
+
+    var showRecognize by mutableStateOf(false)
+        private set
+    /** idle | recording | uploading | done */
+    var recognizePhase by mutableStateOf("idle")
+        private set
+    var recognizeProgress by mutableStateOf(0f)
+        private set
+    var recognizeResults by mutableStateOf<List<Track>>(emptyList())
+        private set
+    var recognizeError by mutableStateOf<String?>(null)
+        private set
+
+    /** 悬浮球/外部入口带入的识曲模式（mic/system），RecognizeScreen 消费后自动开录 */
+    var pendingRecognizeMode by mutableStateOf<String?>(null)
+        private set
+
+    private var recognizeGen = 0
+
+    fun openRecognize(mode: String? = null) {
+        recognizeGen++
+        recognizePhase = "idle"
+        recognizeProgress = 0f
+        recognizeResults = emptyList()
+        recognizeError = null
+        pendingRecognizeMode = mode
+        showRecognize = true
+    }
+
+    fun closeRecognize() {
+        recognizeGen++
+        showRecognize = false
+        recognizePhase = "idle"
+        recognizeProgress = 0f
+    }
+
+    fun consumeRecognizeMode(): String? {
+        val mode = pendingRecognizeMode
+        pendingRecognizeMode = null
+        return mode
+    }
+
+    fun resetRecognize() {
+        recognizeGen++
+        recognizePhase = "idle"
+        recognizeProgress = 0f
+        recognizeResults = emptyList()
+        recognizeError = null
+    }
+
+    /** 麦克风识曲（调用方需已获得 RECORD_AUDIO 权限） */
+    fun startMicRecognize() {
+        val gen = ++recognizeGen
+        recognizePhase = "recording"
+        recognizeProgress = 0f
+        recognizeResults = emptyList()
+        recognizeError = null
+        viewModelScope.launch {
+            val wav = withContext(Dispatchers.IO) {
+                AudioCaptures.recordMic { p ->
+                    viewModelScope.launch(Dispatchers.Main) {
+                        if (gen == recognizeGen) recognizeProgress = p
+                    }
+                }
+            }
+            if (gen != recognizeGen) return@launch
+            if (wav == null) {
+                withContext(Dispatchers.Main) {
+                    recognizePhase = "done"
+                    recognizeError = "录音失败，请确认麦克风权限"
+                }
+                return@launch
+            }
+            submitRecognize(wav, gen)
+        }
+    }
+
+    /** 系统内录识曲（data = 屏幕捕获授权返回的 Intent） */
+    fun startSystemRecognize(projectionData: android.content.Intent?) {
+        if (!AudioCaptures.canCaptureSystemAudio() || projectionData == null) {
+            recognizePhase = "done"
+            recognizeError = "系统内录需要 Android 10 及以上，且要先授权捕获"
+            return
+        }
+        val manager = application.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE)
+            as android.media.projection.MediaProjectionManager
+        val projection = runCatching {
+            manager.getMediaProjection(android.app.Activity.RESULT_OK, projectionData)
+        }.getOrNull()
+        if (projection == null) {
+            recognizePhase = "done"
+            recognizeError = "没能建立音频捕获会话"
+            return
+        }
+        val gen = ++recognizeGen
+        recognizePhase = "recording"
+        recognizeProgress = 0f
+        recognizeResults = emptyList()
+        recognizeError = null
+        viewModelScope.launch {
+            val wav = withContext(Dispatchers.IO) {
+                AudioCaptures.recordSystem(projection) { p ->
+                    viewModelScope.launch(Dispatchers.Main) {
+                        if (gen == recognizeGen) recognizeProgress = p
+                    }
+                }
+            }
+            runCatching { projection.stop() }
+            if (gen != recognizeGen) return@launch
+            if (wav == null) {
+                withContext(Dispatchers.Main) {
+                    recognizePhase = "done"
+                    recognizeError = "系统音频捕获失败"
+                }
+                return@launch
+            }
+            submitRecognize(wav, gen)
+        }
+    }
+
+    private suspend fun submitRecognize(wav: ByteArray, gen: Int) {
+        withContext(Dispatchers.Main) {
+            recognizePhase = "uploading"
+            recognizeProgress = 1f
+        }
+        val result = runCatching { MusicApiClient.recognizeAudio(wav) }
+        if (gen != recognizeGen) return
+        withContext(Dispatchers.Main) {
+            recognizePhase = "done"
+            result.onSuccess { resp ->
+                recognizeResults = resp.tracks.map { it.toUiTrack() }
+                if (recognizeResults.isEmpty()) {
+                    recognizeError = "没听出来这段声音，离音源近一点或换个段落再试"
+                }
+            }.onFailure { e ->
+                recognizeError = "识别失败：${e.message ?: "网络异常"}"
+            }
+        }
+    }
+
+    // ===================== 悬浮球（小精灵） =====================
+
+    var bubbleEnabled by mutableStateOf(false)
+        private set
+
+    fun setBubbleEnabled(enabled: Boolean) {
+        if (enabled) {
+            val species = pets.value.values.firstOrNull()?.species ?: "default"
+            BubbleService.start(application, species)
+        } else {
+            BubbleService.stop(application)
+        }
+        bubbleEnabled = enabled
+    }
+
+    /** 悬浮球菜单命令（YinHeApp 收集后转发到这里） */
+    fun onBubbleCommand(command: BubbleBus.Command) {
+        when (command) {
+            BubbleBus.Command.PlayPause -> togglePlayPause()
+            BubbleBus.Command.Next -> seekToNext()
+            BubbleBus.Command.Previous -> seekToPrevious()
+            BubbleBus.Command.RecognizeMic -> openRecognize("mic")
+            BubbleBus.Command.RecognizeSystem -> openRecognize("system")
+            BubbleBus.Command.Close -> setBubbleEnabled(false)
+        }
     }
 
     fun closePlaylist() {

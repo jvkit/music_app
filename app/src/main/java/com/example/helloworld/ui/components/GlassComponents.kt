@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -81,8 +82,8 @@ fun LiquidBottomBar(
     onSelected: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val labels = listOf("首页", "精灵", "我的")
-    val icons = listOf(Icons.Default.Home, Icons.Default.Star, Icons.Default.Person)
+    val labels = listOf("首页", "发现", "精灵", "我的")
+    val icons = listOf(Icons.Default.Home, Icons.Default.Search, Icons.Default.Star, Icons.Default.Person)
     val density = LocalDensity.current
 
     BoxWithConstraints(

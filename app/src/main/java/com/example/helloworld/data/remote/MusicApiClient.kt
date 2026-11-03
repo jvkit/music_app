@@ -3,7 +3,9 @@ package com.example.helloworld.data.remote
 import com.example.helloworld.data.local.SettingsRepository
 import com.google.gson.annotations.SerializedName
 import java.util.concurrent.TimeUnit
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
+import okhttp3.RequestBody.Companion.toRequestBody
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 
@@ -138,6 +140,38 @@ interface MusicApiService {
 
     @retrofit2.http.GET("announcement")
     suspend fun announcement(): AnnouncementResponse
+
+    // ===================== 发现页（网易云公开元数据代理） =====================
+
+    @retrofit2.http.GET("discover/categories")
+    suspend fun discoverCategories(): DiscoverCategoriesResponse
+
+    @retrofit2.http.GET("discover/toplists")
+    suspend fun discoverToplists(): DiscoverToplistsResponse
+
+    @retrofit2.http.GET("discover/playlists")
+    suspend fun discoverPlaylists(
+        @retrofit2.http.Query("cat") cat: String = "全部",
+        @retrofit2.http.Query("offset") offset: Int = 0,
+        @retrofit2.http.Query("limit") limit: Int = 30
+    ): DiscoverPlaylistsResponse
+
+    @retrofit2.http.GET("discover/playlist")
+    suspend fun discoverPlaylist(
+        @retrofit2.http.Query("playlist_id") playlistId: Long
+    ): DiscoverPlaylistDetailResponse
+
+    @retrofit2.http.GET("discover/fm")
+    suspend fun discoverFm(): DiscoverFmResponse
+
+    // ===================== 听歌识曲 =====================
+
+    @retrofit2.http.POST("recognize")
+    suspend fun recognize(
+        @retrofit2.http.Body audio: okhttp3.RequestBody,
+        @retrofit2.http.Query("fmt") fmt: String = "wav",
+        @retrofit2.http.Query("offset") offset: Int = 4
+    ): RecognizeResponse
 
     @retrofit2.http.POST("feedback")
     suspend fun submitFeedback(
@@ -520,6 +554,42 @@ data class LyricsResponse(
     val source: String? = null
 )
 
+// ===================== 发现页（榜单/歌单墙/歌单详情/私人FM） =====================
+
+data class DiscoverCategory(val id: String = "", val name: String = "")
+
+data class DiscoverCategoriesResponse(val categories: List<DiscoverCategory> = emptyList())
+
+/** 歌单卡片元数据（榜单与歌单墙通用） */
+data class DiscoverPlaylistDto(
+    val id: Long = 0,
+    val name: String = "",
+    val cover: String? = null,
+    @SerializedName("play_count") val playCount: Long? = null,
+    @SerializedName("track_count") val trackCount: Int? = null,
+    @SerializedName("update_frequency") val updateFrequency: String? = null,
+    val description: String? = null,
+    val creator: String? = null
+)
+
+data class DiscoverToplistsResponse(val items: List<DiscoverPlaylistDto> = emptyList())
+
+data class DiscoverPlaylistsResponse(val items: List<DiscoverPlaylistDto> = emptyList())
+
+data class DiscoverPlaylistDetailResponse(
+    val playlist: DiscoverPlaylistDto = DiscoverPlaylistDto(),
+    val tracks: List<ApiTrack> = emptyList()
+)
+
+data class DiscoverFmResponse(val tracks: List<ApiTrack> = emptyList())
+
+// ===================== 听歌识曲 =====================
+
+data class RecognizeResponse(
+    val tracks: List<ApiTrack> = emptyList(),
+    val matched: Boolean = false
+)
+
 object MusicApiClient {
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(6, TimeUnit.SECONDS)
@@ -552,6 +622,12 @@ object MusicApiClient {
                         }
             }
         }
+
+    /** 听歌识曲：上传 WAV 原始字节（11 秒录音），返回识别结果 */
+    suspend fun recognizeAudio(wav: ByteArray): RecognizeResponse {
+        val body = wav.toRequestBody("audio/wav".toMediaTypeOrNull())
+        return service.recognize(body, fmt = "wav")
+    }
 
     fun resolveServerUrl(path: String?): String? {
         if (path.isNullOrBlank()) return null

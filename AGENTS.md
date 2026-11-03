@@ -38,6 +38,11 @@ Compose 单 Activity 架构，音乐服务器是隔壁 `music_web`（接口前�
 - **单 ViewModel（MainViewModel，AndroidViewModel）+ Compose state**，导航是 viewModel 里的
   状态位：`selectedTab / selectedPlaylistId / showNowPlaying / imScreen("friends"|"chat:x")`。
   YinHeApp 顶层 when 分发，返回逻辑 = 各页 BackHandler 逐层返回 + 根双击退出（非首页 tab 先回首页）。
+  **底部导航 4 tab：0=首页 1=发现 2=精灵 3=我的**（改 tab 顺序必须同步改 selectTab 的精灵全屏判断、
+  openPlaylist 的 `selectedTab = 3`、YinHeApp 的 petFullscreen 判断三处魔法数）。
+- **发现页（2026-11）**：`ui/discover/DiscoverScreen.kt` + MainViewModel 的 discover* 状态/动作，
+  数据来自服务端 `/api/discover/*`（网易云公开元数据代理，见 music 项目 knowledge/2026-11_netease_discover_api.md）。
+  私人FM=拉一首直接进详情态并开播；歌单详情曲目走 toUiTrack() 复用 playTrack 播放链。
 - **★ Compose state 只能在主线程写**：`Dispatchers.IO` 里直接改 `mutableStateOf` 在这台 vivo 上
   **不触发重组**（表现为永远卡加载圈）。所有跨线程状态赋值必须
   `withContext(Dispatchers.Main) { ... }`（authState/libraryState/searchState/lyrics 等全是教训）。
