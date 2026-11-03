@@ -283,7 +283,11 @@ data class LookupResponse(val users: List<String> = emptyList())
 data class FriendDto(val username: String, val online: Boolean = false)
 data class FriendsResponse(val friends: List<FriendDto> = emptyList())
 data class FriendRequest(val username: String)
-data class OkResponse(val ok: Boolean = true)
+data class OkResponse(
+    val ok: Boolean = true,
+    /** 仅 /pet/event 返回：本次事件影响到哪些 pair；聊天等高频埋点据此决定是否回拉 */
+    val updated: List<String> = emptyList()
+)
 data class InboxResponse(val messages: List<ImMessageDto> = emptyList())
 
 data class ImMessageDto(

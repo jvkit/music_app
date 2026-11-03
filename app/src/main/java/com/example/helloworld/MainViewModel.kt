@@ -1976,6 +1976,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** 仅回拉宠物数据、不碰素材清单：聊天等高频埋点后用，避免每条消息都请求 manifest */
+    fun refreshPetsLight() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val t = AuthRepository.token() ?: return@launch
+            runCatching { api.petPairs("Bearer $t") }
+                .onSuccess { resp -> pets.value = resp.pairs.associateBy { it.friend } }
+        }
+    }
+
     fun refreshPet(friend: String) {
         viewModelScope.launch(Dispatchers.IO) {
             val t = AuthRepository.token() ?: return@launch
@@ -2134,13 +2143,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 行为埋点：累加所有宠物对的当日任务进度（没宠物时不打扰服务端） */
+    /** 行为埋点：累加所有宠物对的当日任务进度（没宠物时服务端返回空 updated，不必本地预判） */
     fun reportPetEvent(type: String, count: Int = 1) {
-        if (pets.value.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             val t = AuthRepository.token() ?: return@launch
             runCatching { api.petEvent("Bearer $t", PetEventRequest(type, count)) }
-                .onSuccess { refreshPets() }
+                .onSuccess { resp ->
+                    // 只有真的影响到了某个 pair 才回拉；高频埋点走轻量刷新，不重复拉素材清单
+                    if (resp.updated.isNotEmpty()) refreshPetsLight()
+                }
         }
     }
 }
