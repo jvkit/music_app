@@ -11,10 +11,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -86,7 +88,9 @@ fun NowPlayingScreen(
     sleepTimerActive: Boolean = false,
     sleepTimerLabel: String = "",
     onSleepTimer: (Int) -> Unit = {},
-    onSleepTimerCancel: () -> Unit = {}
+    onSleepTimerCancel: () -> Unit = {},
+    playQueue: List<Track> = emptyList(),
+    onPickFromQueue: (Track) -> Unit = {}
 ) {
     var showLyricsPanel by remember { androidx.compose.runtime.mutableStateOf(false) }
     var showSleepTimer by remember { androidx.compose.runtime.mutableStateOf(false) }
@@ -192,21 +196,38 @@ fun NowPlayingScreen(
                 }
             }
 
-            // 黑胶 / 歌词 区
+            // 黑胶 / 歌词 / 队列 三态切换区
+            var centerMode by remember { androidx.compose.runtime.mutableIntStateOf(0) }
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth()
-                    .clickable { showLyricsPanel = !showLyricsPanel },
+                    .fillMaxWidth(),
                 contentAlignment = Alignment.Center
             ) {
-                if (!showLyricsPanel) {
-                    VinylDisc(track = track, isPlaying = isPlaying)
-                } else {
-                    LyricsPanel(lyrics = lyrics, positionMs = positionMs, onSeekLine = onSeek)
+                when (centerMode) {
+                    1 -> Box(modifier = Modifier.fillMaxSize().clickable { centerMode = 2 }) {
+                        LyricsPanel(lyrics = lyrics, positionMs = positionMs, onSeekLine = onSeek)
+                    }
+                    2 -> Box(modifier = Modifier.fillMaxSize().clickable { centerMode = 0 }) {
+                        PlayQueuePanel(
+                            queue = playQueue,
+                            currentTrackId = track.id,
+                            onPick = onPickFromQueue
+                        )
+                    }
+                    else -> Box(
+                        modifier = Modifier.fillMaxSize().clickable { centerMode = 1 },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        VinylDisc(track = track, isPlaying = isPlaying)
+                    }
                 }
                 Text(
-                    text = if (showLyricsPanel) "点击封面查看唱片" else "点击查看歌词",
+                    text = when (centerMode) {
+                        1 -> "点击查看播放列表"
+                        2 -> "点击回到唱片"
+                        else -> "点击查看歌词"
+                    },
                     color = Color.White.copy(alpha = 0.35f),
                     fontSize = 11.sp,
                     modifier = Modifier.align(Alignment.BottomCenter)
@@ -495,6 +516,81 @@ private fun VinylDisc(track: Track, isPlaying: Boolean) {
                 .clip(CircleShape)
                 .background(Color(0xFF2A2440))
         )
+    }
+}
+
+@Composable
+private fun PlayQueuePanel(
+    queue: List<Track>,
+    currentTrackId: String,
+    onPick: (Track) -> Unit
+) {
+    if (queue.isEmpty()) {
+        Text(
+            "播放列表是空的",
+            color = Color.White.copy(alpha = 0.45f),
+            fontSize = 13.sp
+        )
+        return
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(
+            "正在播放 · ${queue.size} 首",
+            color = Color.White.copy(alpha = 0.55f),
+            fontSize = 11.sp,
+            modifier = Modifier.padding(start = 6.dp, bottom = 4.dp)
+        )
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            itemsIndexed(queue, key = { _, t -> t.id }) { index, item ->
+                val isCurrent = item.id == currentTrackId
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                            else Color.Transparent
+                        )
+                        .clickable { onPick(item) }
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "${index + 1}",
+                        color = if (isCurrent) MaterialTheme.colorScheme.primary
+                        else Color.White.copy(alpha = 0.35f),
+                        fontSize = 11.sp,
+                        modifier = Modifier.width(22.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            item.title,
+                            color = if (isCurrent) MaterialTheme.colorScheme.primary else Color.White,
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            item.artist,
+                            color = Color.White.copy(alpha = 0.45f),
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Text(
+                        item.duration,
+                        color = Color.White.copy(alpha = 0.35f),
+                        fontSize = 10.sp
+                    )
+                }
+            }
+        }
     }
 }
 

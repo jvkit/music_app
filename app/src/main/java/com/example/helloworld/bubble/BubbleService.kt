@@ -19,6 +19,8 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.ImageView
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.LifecycleService
 import androidx.savedstate.SavedStateRegistry
@@ -310,6 +312,115 @@ class BubbleService : LifecycleService(), SavedStateRegistryOwner {
         menuParams = null
     }
 
+    // ===================== 识曲小窗（贴在悬浮球旁边） =====================
+
+    private var recognizeView: ComposeView? = null
+    private var recognizeParams: WindowManager.LayoutParams? = null
+
+    /** 由帧循环外的观察者调用：识曲状态一变就重建小窗内容 */
+    private fun showRecognizeCard() {
+        val phase = BubbleBus.recognizePhase
+        if (phase.isBlank()) {
+            hideRecognizeCard()
+            return
+        }
+        val params = layoutParams ?: return
+        val density = resources.displayMetrics.density
+        val bubbleSize = (72 * density).toInt()
+        val cardWidth = (230 * density).toInt()
+        val cardHeight = (64 * density).toInt()
+        val screenW = resources.displayMetrics.widthPixels
+
+        // 贴在悬浮球左侧；左边放不下就放右侧，保证不出屏
+        val preferLeft = params.x - cardWidth - (10 * density).toInt() > 0
+        val x = if (preferLeft) params.x - cardWidth - (10 * density).toInt() else params.x + bubbleSize + (10 * density).toInt()
+        val y = (params.y + bubbleSize / 2 - cardHeight / 2)
+            .coerceIn(0, (resources.displayMetrics.heightPixels - cardHeight).coerceAtLeast(0))
+
+        if (recognizeView == null) {
+            val overlayParams = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                } else {
+                    @Suppress("DEPRECATION")
+                    WindowManager.LayoutParams.TYPE_PHONE
+                },
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                this.x = x.coerceAtLeast(0).coerceAtMost(screenW)
+                this.y = y
+            }
+            val view = ComposeView(this).apply {
+                setViewTreeLifecycleOwner(this@BubbleService)
+                setViewTreeSavedStateRegistryOwner(this@BubbleService)
+            }
+            recognizeView = view
+            recognizeParams = overlayParams
+            runCatching { windowManager.addView(view, overlayParams) }
+                .onFailure { hideRecognizeCard() }
+        } else {
+            recognizeParams?.let {
+                it.x = x.coerceAtLeast(0).coerceAtMost(screenW)
+                it.y = y
+                recognizeView?.let { v -> runCatching { windowManager.updateViewLayout(v, it) } }
+            }
+        }
+
+        // 只在第一次挂载时设内容：内部用 mutableState 观察 BubbleBus，进度变化自动重组
+        if (!cardContentSet) {
+            cardContentSet = true
+            recognizeView?.setContent {
+                MaterialTheme {
+                    var revision by androidx.compose.runtime.remember {
+                        androidx.compose.runtime.mutableIntStateOf(0)
+                    }                    // 每帧轮询共享状态：进度是高频小变化，走 State 比反复 setContent 便宜
+                    androidx.compose.runtime.LaunchedEffect(Unit) {
+                        while (true) {
+                            revision = BubbleBus.recognizeRevision
+                            kotlinx.coroutines.delay(100)
+                        }
+                    }
+                    @Suppress("UNUSED_EXPRESSION")
+                    revision
+                    BubbleRecognizeCard(
+                        phase = BubbleBus.recognizePhase,
+                        progress = BubbleBus.recognizeProgress,
+                        seconds = 11,
+                        title = BubbleBus.recognizeTitle,
+                        artist = BubbleBus.recognizeArtist,
+                        error = BubbleBus.recognizeError,
+                        onOpen = {
+                            // 点结果要真的播放：曲目暂存在 BubbleBus（同进程），
+                            // 不能只 launchApp——那样只是回到 App，歌不会放。
+                            val tracks = BubbleBus.recognizeTracks
+                            if (tracks.isNotEmpty()) {
+                                BubbleBus.send(BubbleBus.Command.PlayRecognized)
+                            }
+                            launchApp()
+                            hideRecognizeCard()
+                        },
+                        onDismiss = { hideRecognizeCard() }
+                    )
+                }
+            }
+        }
+    }
+
+    private var cardContentSet = false
+
+    private fun hideRecognizeCard() {
+        val view = recognizeView ?: return
+        cardContentSet = false
+        recognizeView = null
+        recognizeParams = null
+        runCatching { windowManager.removeViewImmediate(view) }
+    }
+
     private fun onRingAction(id: String) {
         when (id) {
             // 播放控制直连播放器：桌面场景下 App 可能没活、BubbleBus 没有订阅者，
@@ -406,6 +517,7 @@ class BubbleService : LifecycleService(), SavedStateRegistryOwner {
             }
             var lastNanos = 0L
             var lastReq: Pair<Int, Int>? = null
+            var lastRecognizeRev = -1
             while (true) {
                 val now = System.nanoTime()
                 if (lastNanos != 0L) {
@@ -419,6 +531,11 @@ class BubbleService : LifecycleService(), SavedStateRegistryOwner {
                     decodeFrame(characterId, req.first, req.second)?.let { bmp ->
                         if (!bmp.isRecycled) view.setImageBitmap(bmp)
                     }
+                }
+                // 识曲状态变化 → 刷新/收起小窗
+                if (BubbleBus.recognizeRevision != lastRecognizeRev) {
+                    lastRecognizeRev = BubbleBus.recognizeRevision
+                    runCatching { showRecognizeCard() }
                 }
                 delay(33)
             }

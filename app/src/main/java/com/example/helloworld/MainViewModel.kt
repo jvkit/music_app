@@ -413,6 +413,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var queueById: Map<String, Track> = emptyMap()
 
+    /** 播放页「正在播放列表」用：当前队列（有序），Compose 可观察 */
+    var playQueue by mutableStateOf<List<Track>>(emptyList())
+        private set
+
     /** 播放计数：每首每次播放只上报一回（进度 ≥80% 时） */
     private var playReportedFor: String? = null
 
@@ -769,11 +773,62 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var recognizeResults by mutableStateOf<List<Track>>(emptyList())
         private set
     var recognizeError by mutableStateOf<String?>(null)
+    /** 系统内录在后台完成时，只有一条结论（完整列表靠通知/重进拉取） */
+    var recognizeSummary by mutableStateOf<String?>(null)
         private set
 
     /** 悬浮球/外部入口带入的识曲模式（mic/system），RecognizeScreen 消费后自动开录 */
     var pendingRecognizeMode by mutableStateOf<String?>(null)
         private set
+
+    /** 识曲历史（最近的在前），识曲页展示 */
+    val recognizeHistory = database.recognizeHistoryDao().observe().stateIn(
+        scope = viewModelScope,
+        started = kotlinx.coroutines.flow.SharingStarted.Eagerly,
+        initialValue = emptyList<com.example.helloworld.data.local.RecognizeHistoryEntity>()
+    )
+
+    /** 记一条识曲历史：一次识别可能匹配多首，全部存下来 */
+    private fun saveRecognizeHistory(
+        tracks: List<com.example.helloworld.data.remote.ApiTrack>,
+        note: String = ""
+    ) {
+        val now = System.currentTimeMillis()
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                database.recognizeHistoryDao().insert(
+                    com.example.helloworld.data.local.RecognizeHistoryEntity(
+                        id = now,
+                        ts = now,
+                        trackCount = tracks.size,
+                        tracksJson = com.google.gson.Gson().toJson(tracks),
+                        note = note
+                    )
+                )
+            }
+        }
+    }
+
+    fun clearRecognizeHistory() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { database.recognizeHistoryDao().clearAll() }
+        }
+    }
+
+    fun deleteRecognizeHistory(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { database.recognizeHistoryDao().delete(id) }
+        }
+    }
+
+    /** 从历史记录里解析出曲目列表（用于展开/播放） */
+    fun tracksOfHistory(item: com.example.helloworld.data.local.RecognizeHistoryEntity): List<com.example.helloworld.data.remote.ApiTrack> =
+        runCatching {
+            com.google.gson.Gson().fromJson(
+                item.tracksJson,
+                Array<com.example.helloworld.data.remote.ApiTrack>::class.java
+            ).toList()
+        }.getOrDefault(emptyList())
 
     private var recognizeGen = 0
 
@@ -865,12 +920,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             recognizeError = "系统内录需要 Android 10 及以上"
             return
         }
-        val manager = app.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE)
-            as android.media.projection.MediaProjectionManager
 
-        // 每次识别都用**本次新授权**的 data 建会话，不复用旧 token。
-        // Android 14+ 对 MediaProjection token 收得很紧：会话被系统回收后同一 token 永久失效，
-        // 复用反而必然失败（实测小米/Redmi 上反复返回 null）。
+        // 每次都用本次新授权的 data；建投影的动作放在前台服务里做（见 SystemCaptureService）
         val data = projectionData
         if (data == null) {
             diag("没有授权 data（应重新走 createScreenCaptureIntent）")
@@ -878,62 +929,71 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             recognizeError = "需要先授权系统音频捕获"
             return
         }
-        val projection = runCatching {
-            manager.getMediaProjection(android.app.Activity.RESULT_OK, data)
-        }.onFailure {
-            diag("getMediaProjection 抛异常 ${it::class.simpleName}: ${it.message}")
-        }.getOrNull()
-        if (projection == null) {
-            diag("getMediaProjection 返回 null")
-            recognizePhase = "done"
-            recognizeError = "没能建立音频捕获会话，请重新授权"
-            return
-        }
-        diag("getMediaProjection 成功")
-        // Android 14+ 要求：拿到后必须**立刻**注册 Callback，否则后续 AudioRecord 会被系统拒绝
-        projection.registerCallback(object : android.media.projection.MediaProjection.Callback() {
-            override fun onStop() {}
-        }, android.os.Handler(android.os.Looper.getMainLooper()))
 
         val gen = ++recognizeGen
         recognizePhase = "recording"
         recognizeProgress = 0f
         recognizeResults = emptyList()
         recognizeError = null
-        val session = projection
+
+        // 交给前台服务：getMediaProjection 必须在 mediaProjection 类型的前台服务里调用，
+        // 直接在这里调会抛 SecurityException（Android 10+ 硬性要求）。
+        try {
+            com.example.helloworld.recognize.SystemCaptureService.start(app, data)
+        } catch (e: Exception) {
+            diag("启动捕获服务失败 ${e::class.simpleName}: ${e.message}")
+            recognizePhase = "done"
+            recognizeError = "启动音频捕获服务失败：${e.message?.take(60)}"
+            return
+        }
+
+        // 进度条按服务端要求的最短时长走一个模拟进度（真实采集进度在服务里，不回传）
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching { AudioCaptures.recordSystem(session) { p ->
-                    viewModelScope.launch(Dispatchers.Main) {
-                        if (gen == recognizeGen) recognizeProgress = p
-                    }
-                } }
+            val total = AudioCaptures.RECORD_SECONDS * 1000L
+            val startAt = System.currentTimeMillis()
+            while (recognizeGen == gen && recognizePhase == "recording") {
+                val elapsed = System.currentTimeMillis() - startAt
+                if (elapsed >= total) break
+                recognizeProgress = (elapsed.toFloat() / total).coerceIn(0f, 0.98f)
+                kotlinx.coroutines.delay(200)
             }
-            // 本次会话用完即释放：token 一次性，留着也没法复用
-            runCatching { session.stop() }
-            if (gen != recognizeGen) return@launch
-            val wav = result.getOrNull()
-            if (wav == null) {
-                val why = result.exceptionOrNull()?.let { "${it::class.simpleName}: ${it.message}" }
-                    ?: "AudioRecord 初始化失败（设备不支持内录，或该声音被源应用禁止捕获）"
-                diag("系统内录失败：$why")
-                withContext(Dispatchers.Main) {
-                    recognizePhase = "done"
-                    recognizeError = "系统内录失败：$why"
-                }
-                return@launch
+        }
+    }
+
+    /** 捕获服务回调入口（YinHeApp 通过 BroadcastReceiver 转进来） */
+    fun onSystemCaptureResult(audio: ByteArray?, errorCode: Int, errorMessage: String) {
+        if (audio != null) {
+            // 识别交给服务做（App 在后台时 ViewModel 会被回收），这里只推进到"识别中"
+            recognizePhase = "uploading"
+            recognizeProgress = 1f
+            return
+        }
+        recognizePhase = "done"
+        recognizeProgress = 0f
+        recognizeError = when (errorCode) {
+            com.example.helloworld.recognize.SystemCaptureService.ERROR_SILENT ->
+                "录到的全是静音——可能是对方应用禁止了内录，改用麦克风识曲试试"
+            com.example.helloworld.recognize.SystemCaptureService.ERROR_NO_PROJECTION ->
+                "没能建立音频捕获会话：$errorMessage"
+            else -> "系统内录失败：$errorMessage"
+        }
+    }
+
+    /** 服务识别完成（App 还活着时用它更新界面） */
+    fun onRecognizeFinished(firstTitle: String, firstArtist: String, empty: Boolean, error: String) {
+        recognizePhase = "done"
+        recognizeProgress = 1f
+        when {
+            !empty -> {
+                recognizeError = null
+                // 完整列表已存在 BubbleBus.recognizeTracks，顺手落历史
+                val tracks = com.example.helloworld.bubble.BubbleBus.recognizeTracks
+                saveRecognizeHistory(tracks)
+                recognizeResults = tracks.mapNotNull { runCatching { it.toUiTrack() }.getOrNull() }
+                recognizeSummary = "$firstTitle · $firstArtist"
             }
-            // 全静音检测：源应用设了 ALLOW_CAPTURE_BY_NONE 时，能录但全是 0
-            if (AudioCaptures.isSilent(wav)) {
-                diag("录到全静音，疑似源应用禁止捕获")
-                withContext(Dispatchers.Main) {
-                    recognizePhase = "done"
-                    recognizeError = "录到的全是静音——可能是对方应用禁止了内录，改用麦克风识曲试试"
-                }
-                return@launch
-            }
-            diag("录音完成 ${wav.size} 字节，提交识别")
-            submitRecognize(wav, gen)
+            error.isNotBlank() -> recognizeError = "识别失败：$error"
+            else -> recognizeError = "没听出来这段声音，换个段落再试"
         }
     }
 
@@ -948,11 +1008,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             recognizePhase = "done"
             result.onSuccess { resp ->
                 recognizeResults = resp.tracks.map { it.toUiTrack() }
-                if (recognizeResults.isEmpty()) {
-                    recognizeError = "没听出来这段声音，离音源近一点或换个段落再试"
+                saveRecognizeHistory(resp.tracks)
+                val first = recognizeResults.firstOrNull()
+                if (first == null) {
+                    recognizeError = "没听出来这段声音，换个段落再试"
+                    com.example.helloworld.recognize.SystemCaptureService.showResultNotification(
+                        app, "音河 · 没识别出来", "换个段落再试，或用麦克风识曲"
+                    )
+                } else {
+                    // 用户大概率还在别的 App 里放歌，结果推到通知栏
+                    com.example.helloworld.recognize.SystemCaptureService.showResultNotification(
+                        app, "识别到：${first.title}", "${first.artist}（点这里回音河播放）"
+                    )
                 }
             }.onFailure { e ->
                 recognizeError = "识别失败：${e.message ?: "网络异常"}"
+                com.example.helloworld.recognize.SystemCaptureService.showResultNotification(
+                    app, "音河 · 识别失败", e.message ?: "网络异常"
+                )
             }
         }
     }
@@ -1008,6 +1081,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             // 进入软件：悬浮球直接拉起 MainActivity 即可，这里无需额外动作
             BubbleBus.Command.OpenApp -> Unit
+            // 播放识别结果：曲目存在 BubbleBus.recognizeTracks，直接拿来播
+            BubbleBus.Command.PlayRecognized -> {
+                val tracks = BubbleBus.recognizeTracks.mapNotNull { t ->
+                    runCatching { t.toUiTrack() }.getOrNull()
+                }
+                if (tracks.isNotEmpty()) {
+                    playTrack(tracks.first(), tracks)
+                }
+            }
             BubbleBus.Command.Close -> toggleBubble(false)
         }
     }
@@ -1184,6 +1266,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val playQueue = queue.ifEmpty { listOf(track) }
         val startIndex = playQueue.indexOfFirst { it.id == track.id }.takeIf { it >= 0 } ?: 0
         queueById = playQueue.associateBy { it.id }
+        this.playQueue = playQueue
         if (track.id != currentTrack.id) {
             playbackError = null
             playReportedFor = null
@@ -1239,6 +1322,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val safeIndex = index.coerceIn(0, tracks.lastIndex)
             currentTrack = tracks[safeIndex]
             queueById = tracks.associateBy { it.id }
+            playQueue = tracks
             playerController.restoreQueue(tracks, safeIndex)
         }
     }
@@ -1502,7 +1586,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val friendDao = database.friendDao()
     private val imMessageDao = database.imMessageDao()
-
     val friends = friendDao.observeAll().stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,

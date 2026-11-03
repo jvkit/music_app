@@ -202,3 +202,25 @@ Compose 单 Activity 架构，音乐服务器是隔壁 `music_web`（接口前�
   可用 `adb shell appops set com.example.helloworld SYSTEM_ALERT_WINDOW allow` 临时开）。
   设置弹窗里现在有 `ui/library/PermissionSection.kt` 权限自检：检测悬浮窗/麦克风/通知，
   缺的点了直接跳对应系统页，`ON_RESUME` 回来自动刷新状态。
+
+## 听歌识曲（系统内录）关键事实（2026-11，v1.7.0）
+
+- **`getMediaProjection` 必须在 `foregroundServiceType="mediaProjection"` 的前台服务里调**，
+  否则直接抛 `SecurityException: Media projections require a foreground service of type
+  ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION`。以前放在 ViewModel 里调，
+  在 Android 13/14+ 上必然失败（表现为"点了共享屏幕就没后话"）。
+  实现见 `recognize/SystemCaptureService.kt`，Manifest 里声明 `foregroundServiceType="mediaProjection"`。
+- **`MediaProjection` token 一次性**：Android 14+ 会话被停止/回收后同一 token 永久失效，
+  缓存复用必然拿到 null（小米/Redmi 实测）。所以每次识别都重新授权、用完即释放。
+- **录音和识别都要放在服务里**：授权后 App 会自动 `moveTaskToBack` 退到后台
+  （内录要识别的是别的 App 正在放的声音，停在音河里就没声可录）。
+  这之后 ViewModel 会被回收，上传识别若留在 ViewModel 协程里必然中途被杀（`VM exiting`）。
+- **音频不能走广播**：`TransactionTooLargeException: data parcel size 970624 bytes`——
+  广播上限约 1MB，11 秒 44.1kHz 单声道 WAV 是 970KB。音频全程留在服务进程内，
+  广播/共享状态只传文本和 `ApiTrack` 引用（`BubbleBus.recognizeTracks`）。
+- **源应用可能禁止捕获**（`AudioPlaybackCaptureConfiguration` 的 `ALLOW_CAPTURE_BY_NONE`）：
+  表现为"录到了但全是静音"，用 `AudioCaptures.isSilent()` 检测并提示改用麦克风。
+- 展示链路：悬浮球旁小窗（`bubble/BubbleRecognizeCard`，WindowManager overlay，录制中走真实进度）
+  + 通知栏 + 识曲页历史（`recognize_history` 表，Room v5，一次识别存全部匹配）。
+- **动作池规则（用户定义）**：点击与空闲随机都应能抽到**任意已购买动作**，
+  `roles.click` 只是"特定指名"，给权重不排他；动作播放满 0.5s 后允许被下一次点击打断。

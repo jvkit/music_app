@@ -8,8 +8,8 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [PlaylistEntity::class, FavoriteTrackEntity::class, CachedTrackEntity::class, PlaylistTrackEntity::class, FriendEntity::class, ImMessageEntity::class],
-    version = 4,
+    entities = [PlaylistEntity::class, FavoriteTrackEntity::class, CachedTrackEntity::class, PlaylistTrackEntity::class, FriendEntity::class, ImMessageEntity::class, RecognizeHistoryEntity::class],
+    version = 5,
     exportSchema = false
 )
 abstract class YinHeDatabase : RoomDatabase() {
@@ -19,6 +19,7 @@ abstract class YinHeDatabase : RoomDatabase() {
     abstract fun playlistTrackDao(): PlaylistTrackDao
     abstract fun friendDao(): FriendDao
     abstract fun imMessageDao(): ImMessageDao
+    abstract fun recognizeHistoryDao(): RecognizeHistoryDao
 
     companion object {
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -104,16 +105,31 @@ abstract class YinHeDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `recognize_history` (
+                        `id` INTEGER NOT NULL PRIMARY KEY,
+                        `ts` INTEGER NOT NULL,
+                        `trackCount` INTEGER NOT NULL,
+                        `tracksJson` TEXT NOT NULL,
+                        `note` TEXT NOT NULL DEFAULT ''
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var instance: YinHeDatabase? = null
-
         fun getInstance(context: Context): YinHeDatabase {
             return instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
                     context.applicationContext,
                     YinHeDatabase::class.java,
                     "yinhe.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { instance = it }
             }
         }
     }

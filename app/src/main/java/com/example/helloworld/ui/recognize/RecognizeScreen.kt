@@ -88,6 +88,10 @@ fun RecognizeScreen(viewModel: MainViewModel) {
         )
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             viewModel.startSystemRecognize(result.data)
+            // 关键交互：内录要识别的是**别的 App** 正在放的声音。
+            // 停在音河里用户就没法放歌，所以授权后立刻把自己退到后台，
+            // 录制由前台服务继续跑，11 秒后结果推到通知栏。
+            activity?.moveTaskToBack(true)
         } else {
             viewModel.resetRecognize()
         }
@@ -201,6 +205,12 @@ fun RecognizeScreen(viewModel: MainViewModel) {
                     }
                 }
             }
+        }
+
+        // 识曲历史：空闲时列出以前的识别记录，展开可看全部匹配（常常一次好几首）
+        if (phase != "recording" && phase != "uploading") {
+            Spacer(Modifier.height(16.dp))
+            RecognizeHistorySection(viewModel)
         }
 
         Spacer(Modifier.weight(1f, fill = false))

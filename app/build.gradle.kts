@@ -22,8 +22,8 @@ android {
         applicationId = "com.example.helloworld"
         minSdk = 23
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.6.0"
+        versionCode = 7
+        versionName = "1.7.0"
         buildConfigField("String", "SERVER_API_BASE", "\"$serverApiBaseUrl\"")
         buildConfigField("String", "SERVER_ORIGIN", "\"$serverOrigin\"")
     }

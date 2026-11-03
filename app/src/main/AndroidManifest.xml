@@ -45,5 +45,10 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="desktop_bubble_pet" />
         </service>
+        <!-- 系统内录识曲：getMediaProjection 只能在 mediaProjection 类型的前台服务里调用 -->
+        <service
+            android:name=".recognize.SystemCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
     </application>
 </manifest>

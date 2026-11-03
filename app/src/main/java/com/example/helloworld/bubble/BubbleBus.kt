@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.asSharedFlow
  * - 识曲请求同时触发 requestRecognize（应用可能已在后台，靠流唤醒 UI 并拉起前台）。
  */
 object BubbleBus {
-    enum class Command { PlayPause, Next, Previous, RecognizeMic, RecognizeSystem, Favorite, OpenApp, Close }
+    enum class Command { PlayPause, Next, Previous, RecognizeMic, RecognizeSystem, Favorite, OpenApp, Close, PlayRecognized }
 
     private val _commands = MutableSharedFlow<Command>(extraBufferCapacity = 16)
     val commands = _commands.asSharedFlow()
@@ -35,6 +35,57 @@ object BubbleBus {
     /** 当前角色已购买/已解锁的动作：悬浮球引擎靠它决定点击/随机能播哪些 */
     @Volatile
     var unlockedActions: Set<String> = emptySet()
+
+    /**
+     * 识曲状态（悬浮球小窗展示）。
+     * phase: "" 隐藏 / recording / uploading / done
+     * 服务与 App 同进程，普通 volatile 够用；小窗由 BubbleService 直接观察。
+     */
+    @Volatile
+    var recognizePhase: String = ""
+
+    @Volatile
+    var recognizeProgress: Float = 0f
+
+    @Volatile
+    var recognizeTitle: String = ""
+
+    @Volatile
+    var recognizeArtist: String = ""
+
+    @Volatile
+    var recognizeError: String = ""
+
+    /** 状态变化计数：Compose 用它当 key 触发重组 */
+    @Volatile
+    var recognizeRevision: Int = 0
+
+    /**
+     * 最近一次识别的完整曲目列表。
+     * 同进程直接传引用：ApiTrack 序列化后动辄几十 KB，走广播会撑爆 parcel（1MB 上限）。
+     */
+    @Volatile
+    var recognizeTracks: List<com.example.helloworld.data.remote.ApiTrack> = emptyList()
+
+    fun updateRecognize(
+        phase: String,
+        progress: Float = 0f,
+        title: String = "",
+        artist: String = "",
+        error: String = ""
+    ) {
+        recognizePhase = phase
+        recognizeProgress = progress
+        recognizeTitle = title
+        recognizeArtist = artist
+        recognizeError = error
+        recognizeRevision++
+    }
+
+    /** 只更新录制进度（高频调用，不递增 revision，避免小窗反复重建） */
+    fun updateRecognizeProgress(progress: Float) {
+        recognizeProgress = progress
+    }
 
     /**
      * 冷启动兜底：Activity 在 Compose 订阅前收到 intent 时，把模式存在这里，

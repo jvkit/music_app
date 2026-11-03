@@ -139,6 +139,55 @@ private fun YinHeMain(viewModel: MainViewModel, username: String) {
         }
     }
 
+    // 系统内录取音结果（前台服务录完发广播回来）
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(ctx: android.content.Context?, intent: android.content.Intent?) {
+                when (intent?.action) {
+                    com.example.helloworld.recognize.SystemCaptureService.ACTION_RESULT -> {
+                        @Suppress("DEPRECATION")
+                        val audio = intent.getByteArrayExtra(
+                            com.example.helloworld.recognize.SystemCaptureService.EXTRA_AUDIO
+                        )
+                        val code = intent.getIntExtra(
+                            com.example.helloworld.recognize.SystemCaptureService.EXTRA_ERROR_CODE, 0
+                        )
+                        val msg = intent.getStringExtra(
+                            com.example.helloworld.recognize.SystemCaptureService.EXTRA_ERROR_MESSAGE
+                        ).orEmpty()
+                        viewModel.onSystemCaptureResult(audio, code, msg)
+                    }
+                    com.example.helloworld.recognize.SystemCaptureService.ACTION_RECOGNIZED -> {
+                        viewModel.onRecognizeFinished(
+                            firstTitle = intent.getStringExtra(
+                                com.example.helloworld.recognize.SystemCaptureService.EXTRA_RESULT_FIRST
+                            ).orEmpty(),
+                            firstArtist = intent.getStringExtra(
+                                com.example.helloworld.recognize.SystemCaptureService.EXTRA_RESULT_ARTIST
+                            ).orEmpty(),
+                            empty = intent.getBooleanExtra(
+                                com.example.helloworld.recognize.SystemCaptureService.EXTRA_RESULT_EMPTY, true
+                            ),
+                            error = intent.getStringExtra(
+                                com.example.helloworld.recognize.SystemCaptureService.EXTRA_RESULT_ERROR
+                            ).orEmpty()
+                        )
+                    }
+                }
+            }
+        }
+        androidx.core.content.ContextCompat.registerReceiver(
+            context,
+            receiver,
+            android.content.IntentFilter().apply {
+                addAction(com.example.helloworld.recognize.SystemCaptureService.ACTION_RESULT)
+                addAction(com.example.helloworld.recognize.SystemCaptureService.ACTION_RECOGNIZED)
+            },
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        onDispose { runCatching { context.unregisterReceiver(receiver) } }
+    }
+
     // 根返回：非首页 tab 先回首页；首页双击退出（防误触）；详情页/播放页各自 BackHandler 逐层返回
     BackHandler(enabled = viewModel.selectedPlaylistId == null && !viewModel.showNowPlaying) {
         if (viewModel.selectedTab != 0) {
@@ -376,7 +425,9 @@ private fun YinHeMain(viewModel: MainViewModel, username: String) {
                         if (minutes == 0) viewModel.startSleepTimerEndOfTrack()
                         else viewModel.startSleepTimer(minutes)
                     },
-                    onSleepTimerCancel = viewModel::cancelSleepTimer
+                    onSleepTimerCancel = viewModel::cancelSleepTimer,
+                    playQueue = viewModel.playQueue,
+                    onPickFromQueue = { t -> viewModel.playTrack(t, viewModel.playQueue) }
                 )
             }
 
