@@ -36,6 +36,32 @@ class PlayerController(
     private var controller: MediaController? = null
     private var ticker: Job? = null
 
+    /**
+     * 连接期缓冲：MediaController 是异步连上的（冷启动要等 MediaSessionService 起来），
+     * 这期间用户点播放/切歌若直接 return 会被静默丢掉——表现为「点了没反应、上下一曲失效」。
+     * 所以先排队，连上后按序补执行。
+     */
+    private val pendingActions = ArrayDeque<(MediaController) -> Unit>()
+    @Volatile
+    private var connected = false
+
+    private fun withController(block: (MediaController) -> Unit) {
+        val c = controller
+        if (c != null && connected) {
+            block(c)
+            return
+        }
+        synchronized(pendingActions) {
+            // 双检：排队瞬间可能刚好连上
+            val now = controller
+            if (now != null && connected) {
+                block(now)
+            } else {
+                pendingActions.addLast({ mc -> block(mc) })
+            }
+        }
+    }
+
     private val _isPlaying = MutableStateFlow(false)
     private val _isBuffering = MutableStateFlow(false)
     private val _positionMs = MutableStateFlow(0L)
@@ -108,13 +134,22 @@ class PlayerController(
                         }
                     }
                 }
+                // 补执行连接期间排队的操作（必须在主线程跑：MediaController 是主线程对象）
+                synchronized(pendingActions) {
+                    connected = mediaController != null
+                    if (mediaController != null) {
+                        while (pendingActions.isNotEmpty()) {
+                            val action = pendingActions.removeFirst()
+                            runCatching { action(mediaController) }
+                        }
+                    }
+                }
             },
             MoreExecutors.directExecutor()
         )
     }
 
     fun playQueue(tracks: List<Track>, startIndex: Int) {
-        val c = controller ?: return
         if (tracks.isEmpty()) return
         val safeIndex = startIndex.coerceIn(0, tracks.lastIndex)
         TrackPayloadStore.putAll(tracks.associate { it.id to it.apiTrack })
@@ -134,57 +169,63 @@ class PlayerController(
                 .build()
         }
         _playbackError.value = null
-        c.setMediaItems(items, safeIndex, C.TIME_UNSET)
-        c.prepare()
-        c.playWhenReady = true
+        withController { c ->
+            c.setMediaItems(items, safeIndex, C.TIME_UNSET)
+            c.prepare()
+            c.playWhenReady = true
+        }
     }
 
     fun toggle() {
-        val c = controller ?: return
-        if (c.mediaItemCount == 0) return
         _playbackError.value = null
-        if (c.isPlaying) c.pause() else c.play()
+        withController { c ->
+            if (c.mediaItemCount == 0) return@withController
+            if (c.isPlaying) c.pause() else c.play()
+        }
     }
 
     fun play() {
-        val c = controller ?: return
         _playbackError.value = null
-        c.play()
+        withController { it.play() }
     }
 
     fun pause() {
+        // 暂停不用排队：连接前本来就没在放
         controller?.pause()
     }
 
     fun seekToNext() {
-        val c = controller ?: return
-        if (c.mediaItemCount == 0) return
         _playbackError.value = null
-        if (c.hasNextMediaItem() || c.repeatMode == Player.REPEAT_MODE_ALL) {
-            c.seekToNextMediaItem()
-            c.prepare()
-            c.playWhenReady = true
+        withController { c ->
+            if (c.mediaItemCount == 0) return@withController
+            if (c.hasNextMediaItem() || c.repeatMode == Player.REPEAT_MODE_ALL) {
+                c.seekToNextMediaItem()
+                c.prepare()
+                c.playWhenReady = true
+            }
         }
     }
 
     fun seekToPrevious() {
-        val c = controller ?: return
-        if (c.mediaItemCount == 0) return
         _playbackError.value = null
-        val atFirstItem = c.currentMediaItemIndex == 0
-        if (atFirstItem && c.currentPosition <= 3000L) {
-            c.seekTo(c.mediaItemCount - 1, C.TIME_UNSET)
-            c.prepare()
-            c.playWhenReady = true
-        } else {
-            c.seekToPrevious()
+        withController { c ->
+            if (c.mediaItemCount == 0) return@withController
+            val atFirstItem = c.currentMediaItemIndex == 0
+            if (atFirstItem && c.currentPosition <= 3000L) {
+                c.seekTo(c.mediaItemCount - 1, C.TIME_UNSET)
+                c.prepare()
+                c.playWhenReady = true
+            } else {
+                c.seekToPrevious()
+            }
         }
     }
 
     fun stop() {
-        val c = controller ?: return
-        c.stop()
-        c.clearMediaItems()
+        withController { c ->
+            c.stop()
+            c.clearMediaItems()
+        }
         _isPlaying.value = false
         _isBuffering.value = false
         _positionMs.value = 0L
@@ -193,16 +234,16 @@ class PlayerController(
     }
 
     fun cycleRepeatMode() {
-        val c = controller ?: return
         modeIndex = (modeIndex + 1) % REPEAT_LABELS.size
-        applyMode(c, modeIndex)
+        withController { c -> applyMode(c, modeIndex) }
         publishModeLabel()
     }
 
     fun seekTo(positionMs: Long) {
-        val c = controller ?: return
-        if (c.mediaItemCount == 0) return
-        c.seekTo(positionMs.coerceAtLeast(0L))
+        withController { c ->
+            if (c.mediaItemCount == 0) return@withController
+            c.seekTo(positionMs.coerceAtLeast(0L))
+        }
     }
 
     private fun applyMode(c: MediaController, index: Int) {

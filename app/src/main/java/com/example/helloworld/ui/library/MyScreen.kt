@@ -85,7 +85,9 @@ fun MyScreen(
     onOpenLocal: () -> Unit,
     onCreatePlaylist: (String, String) -> Unit,
     onUpdatePlaylist: (Playlist) -> Unit,
-    onDeletePlaylist: (Playlist) -> Unit
+    onDeletePlaylist: (Playlist) -> Unit,
+    bubbleEnabled: Boolean = false,
+    onToggleBubble: (Boolean) -> Unit = {}
 ) {
     var showCreate by remember { mutableStateOf(false) }
     var editingPlaylist by remember { mutableStateOf<Playlist?>(null) }
@@ -375,7 +377,9 @@ fun MyScreen(
             onDismiss = { showSettings = false },
             onCheckUpdate = onCheckUpdate,
             onSubmitFeedback = onSubmitFeedback,
-            onUploadLogs = onUploadLogs
+            onUploadLogs = onUploadLogs,
+            bubbleEnabled = bubbleEnabled,
+            onToggleBubble = onToggleBubble
         )
     }
     if (showLogs) {
@@ -811,7 +815,9 @@ private fun AboutDialog(
     onDismiss: () -> Unit,
     onCheckUpdate: ((Boolean, String?) -> Unit) -> Unit,
     onSubmitFeedback: (String, (String?) -> Unit) -> Unit,
-    onUploadLogs: ((String?) -> Unit) -> Unit
+    onUploadLogs: ((String?) -> Unit) -> Unit,
+    bubbleEnabled: Boolean = false,
+    onToggleBubble: (Boolean) -> Unit = {}
 ) {
     var feedback by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -867,7 +873,11 @@ private fun AboutDialog(
                     modifier = Modifier.padding(top = 10.dp)
                 )
                 // 权限检查：缺哪个点哪个去申请（悬浮球/识曲都要系统授权，装完默认是不给的）
-                PermissionSection(context)
+                PermissionSection(
+                    context = context,
+                    bubbleEnabled = bubbleEnabled,
+                    onToggleBubble = onToggleBubble
+                )
                 status?.let {
                     Text(
                         text = it,

@@ -24,6 +24,14 @@ object BubbleBus {
     @Volatile
     var isPlaying: Boolean = false
 
+    /** 当前歌曲是否已收藏：环形菜单收藏项据此显示红心/空心 */
+    @Volatile
+    var isFavorited: Boolean = false
+
+    /** 是否真的有歌在播（没有时收藏项置灰，点了没意义） */
+    @Volatile
+    var hasTrack: Boolean = false
+
     /**
      * 冷启动兜底：Activity 在 Compose 订阅前收到 intent 时，把模式存在这里，
      * 由 YinHeApp 首次组合时消费（SharedFlow 无 replay，不能只靠 emit）。

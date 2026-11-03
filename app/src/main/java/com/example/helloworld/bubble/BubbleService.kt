@@ -21,6 +21,9 @@ import android.widget.ImageView
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.LifecycleService
+import androidx.savedstate.SavedStateRegistry
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import com.example.helloworld.MainActivity
 import com.example.helloworld.ui.components.PetAnimationEngine
@@ -43,7 +46,7 @@ import kotlin.math.abs
  *   （识曲·麦克风 / 识曲·系统声音 / 播放暂停 / 上一首 / 下一首 / 收起）。
  * - 识曲菜单会拉起 MainActivity 并把 mode 经 BubbleBus 交给 UI 层。
  */
-class BubbleService : LifecycleService() {
+class BubbleService : LifecycleService(), SavedStateRegistryOwner {
 
     private lateinit var windowManager: WindowManager
     private var bubbleView: ImageView? = null
@@ -52,8 +55,21 @@ class BubbleService : LifecycleService() {
     private var menuParams: WindowManager.LayoutParams? = null
     private var species: String = "default"
 
+    /**
+     * ComposeView 挂在 WindowManager 上时不走任何 Activity，必须手动喂 ViewTreeOwner。
+     * Compose 在 onAttachedToWindow 里**强制**要求 SavedStateRegistryOwner，缺了直接抛
+     * IllegalStateException 崩进程——所以这里自己实现一份。
+     */
+    private val savedStateRegistryController = androidx.savedstate.SavedStateRegistryController.create(this)
+    override val savedStateRegistry: androidx.savedstate.SavedStateRegistry
+        get() = savedStateRegistryController.savedStateRegistry
+
     /** 中心按钮显示播放还是暂停：由 UI 侧回来（BubbleBus.playbackState） */
     private var isPlayingState: Boolean = false
+
+    /** 帧循环里的动画引擎：点击时用来立刻播一次互动动作 */
+    @Volatile
+    private var engineRef: PetAnimationEngine? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var frameJob: Job? = null
@@ -61,6 +77,7 @@ class BubbleService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
+        savedStateRegistryController.performRestore(null)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         BubbleBus.isEnabled = true
     }
@@ -168,7 +185,7 @@ class BubbleService : LifecycleService() {
                 MotionEvent.ACTION_UP -> {
                     mainHandler.removeCallbacks(longPressRunnable)
                     if (!dragging && !longPressFired) {
-                        BubbleBus.send(BubbleBus.Command.PlayPause)
+                        onBubbleTapped()
                     }
                     true
                 }
@@ -179,6 +196,43 @@ class BubbleService : LifecycleService() {
                 else -> false
             }
         }
+    }
+
+    /**
+     * 单击悬浮球：先让精灵播一次互动动作（视觉反馈），再切换播放/暂停。
+     *
+     * 关键：不能只发 BubbleBus 事件——桌面场景下 MainActivity 可能已销毁、没有订阅者，
+     * 事件会被静默丢弃，表现为"点了完全没反应"。这里直接对播放器下命令。
+     */
+    private fun onBubbleTapped() {
+        engineRef?.tap()
+        scope.launch {
+            val c = connectController() ?: return@launch
+            if (c.mediaItemCount == 0) return@launch
+            if (c.isPlaying) c.pause() else c.play()
+        }
+    }
+
+    /** 懒连接 MediaController（播放服务可能还没起，连一次常驻） */
+    private var mediaController: androidx.media3.session.MediaController? = null
+
+    private suspend fun connectController(): androidx.media3.session.MediaController? {
+        mediaController?.let { return it }
+        return runCatching {
+            val token = androidx.media3.session.SessionToken(
+                this,
+                android.content.ComponentName(this, com.example.helloworld.playback.YinHeMediaService::class.java)
+            )
+            val future = androidx.media3.session.MediaController.Builder(this, token).buildAsync()
+            val c = kotlinx.coroutines.suspendCancellableCoroutine<androidx.media3.session.MediaController?> { cont ->
+                future.addListener({
+                    val v = runCatching { future.get() }.getOrNull()
+                    cont.resumeWith(Result.success(v))
+                }, com.google.common.util.concurrent.MoreExecutors.directExecutor())
+            }
+            mediaController = c
+            c
+        }.getOrNull()
     }
 
     private fun showMenu(anchor: View) {
@@ -211,12 +265,15 @@ class BubbleService : LifecycleService() {
         }
         val view = ComposeView(this).apply {
             setViewTreeLifecycleOwner(this@BubbleService)
+            setViewTreeSavedStateRegistryOwner(this@BubbleService)
             setContent {
                 MaterialTheme {
                     BubbleRingMenu(
                         centerX = cx,
                         centerY = cy,
                         isPlaying = isPlayingState,
+                        favorited = BubbleBus.isFavorited,
+                        hasTrack = BubbleBus.hasTrack,
                         onAction = { id -> onRingAction(id) },
                         onDismiss = { hideMenu() }
                     )
@@ -250,9 +307,21 @@ class BubbleService : LifecycleService() {
                 launchAppForRecognize("system")
             }
             BubbleRingItems.FAVORITE -> BubbleBus.send(BubbleBus.Command.Favorite)
-            BubbleRingItems.OPEN_APP -> BubbleBus.send(BubbleBus.Command.OpenApp)
+            BubbleRingItems.OPEN_APP -> launchApp()
             BubbleRingItems.CLOSE -> BubbleBus.send(BubbleBus.Command.Close)
         }
+    }
+
+    /** 进入软件：直接拉起 MainActivity（不能只发 bus 事件，UI 侧没有处理者时等于没效果） */
+    private fun launchApp() {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+            )
+        }
+        runCatching { startActivity(intent) }
     }
 
     private fun launchAppForRecognize(mode: String) {
@@ -282,8 +351,11 @@ class BubbleService : LifecycleService() {
                 behaviors = character.behaviors,
                 defaultFps = character.fps,
                 starter = character.starter.toSet(),
-                unlocked = emptySet()
+                unlocked = emptySet(),
+                // 已购买的动作才允许播；和 App 内宠物页保持一致，否则会触发未购买素材的下载
+                sellable = PetContentStore.sellableClips(characterId)
             )
+            engineRef = engine
             var lastNanos = 0L
             var lastReq: Pair<Int, Int>? = null
             while (true) {

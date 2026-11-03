@@ -60,16 +60,27 @@ class PetAnimationEngine(
             Phase.SLEEP -> wake()
             Phase.IDLE -> {
                 idleSeconds = 0f
-                val pool = roles.click.filter(::allowed)
-                if (pool.isNotEmpty()) {
-                    playOnce(pool.random(rnd))
+                nextRandomAt = randomInterval()
+                // 点击池 = 所有已解锁（starter）/已购买的动作，不限 roles.click。
+                // roles.click 里的动作是"特地指给点击"的，给更高权重，但不排斥其他动作。
+                val preferred = roles.click.filter(::allowed)
+                val pool = playableClips()
+                if (pool.isEmpty()) return
+                // 70% 落在指定点击动作上（若有），30% 落在其余已购动作，避免"点来点去永远一个"
+                val name = if (preferred.isNotEmpty() && rnd.nextFloat() < 0.7f) {
+                    preferred.random(rnd)
                 } else {
-                    playRandomCategory()
+                    pool.random(rnd)
                 }
+                playOnce(name)
             }
             Phase.ACTION -> Unit // 动作中不打断
         }
     }
+
+    /** 该角色当前可播的全部动作（已解锁/已购买，且素材存在），排除正在播的那个避免重复 */
+    private fun playableClips(): List<String> =
+        clips.keys.filter { it != clipName && allowed(it) && it !in roles.idle }
 
     /** 外部事件：balance / whisper / workStatus / celebrate / error ... */
     fun triggerEvent(kind: String, index: Int? = null) {
@@ -136,20 +147,27 @@ class PetAnimationEngine(
     }
 
     private fun playRandomCategory(): Boolean {
+        nextRandomAt = randomInterval()
+        // 空闲随机池同样 = 所有已解锁/已购买动作。behaviors.categories 只是"分门别类+权重"，
+        // 没被分到任何分类里的已购动作（新上架的一批）也应该能随机到。
         val cats = behaviors.categories.mapNotNull { cat ->
             val actions = cat.actions.filter(::allowed)
             if (actions.isEmpty()) null else cat to actions
         }
-        if (cats.isEmpty()) return false
-        val total = cats.sumOf { it.first.weight.coerceAtLeast(1) }
-        var roll = rnd.nextInt(total.coerceAtLeast(1))
-        val chosen = cats.firstOrNull { cat ->
-            roll -= cat.first.weight.coerceAtLeast(1)
-            roll < 0
-        }?.second ?: cats.first().second
-        val name = chosen.random(rnd)
-        nextRandomAt = randomInterval()
-        playOnce(name)
+        if (cats.isNotEmpty()) {
+            val total = cats.sumOf { it.first.weight.coerceAtLeast(1) }
+            var roll = rnd.nextInt(total.coerceAtLeast(1))
+            val chosen = cats.firstOrNull { cat ->
+                roll -= cat.first.weight.coerceAtLeast(1)
+                roll < 0
+            }?.second ?: cats.first().second
+            playOnce(chosen.random(rnd))
+            return true
+        }
+        // 没有任何分类（或分类里的动作全没解锁）：直接从未分类的已购动作里挑
+        val pool = playableClips()
+        if (pool.isEmpty()) return false
+        playOnce(pool.random(rnd))
         return true
     }
 

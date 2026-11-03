@@ -126,6 +126,14 @@ private fun YinHeMain(viewModel: MainViewModel, username: String) {
         }
     }
 
+    // 悬浮球默认常驻：有悬浮窗权限就自动起（用户手动关过就不再自动起）
+    LaunchedEffect(Unit) {
+        val prefs = context.getSharedPreferences("yinhe_bubble", android.content.Context.MODE_PRIVATE)
+        if (prefs.getBoolean("enabled", true)) {
+            viewModel.autoStartBubble()
+        }
+    }
+
     // 根返回：非首页 tab 先回首页；首页双击退出（防误触）；详情页/播放页各自 BackHandler 逐层返回
     BackHandler(enabled = viewModel.selectedPlaylistId == null && !viewModel.showNowPlaying) {
         if (viewModel.selectedTab != 0) {
@@ -253,7 +261,9 @@ private fun YinHeMain(viewModel: MainViewModel, username: String) {
                             onOpenLocal = { viewModel.openPlaylist(VIRTUAL_LOCAL_ID) },
                             onCreatePlaylist = viewModel::createPlaylist,
                             onUpdatePlaylist = viewModel::updatePlaylist,
-                            onDeletePlaylist = viewModel::deletePlaylist
+                            onDeletePlaylist = viewModel::deletePlaylist,
+                            bubbleEnabled = viewModel.bubbleEnabled,
+                            onToggleBubble = viewModel::toggleBubble
                         )
                     } else {
                         HomeScreen(

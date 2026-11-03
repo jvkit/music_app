@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Menu
@@ -84,13 +85,27 @@ object BubbleRingItems {
 
     private fun deg(d: Double) = d * PI / 180.0
 
-    /** 从正右开始逆时针：右→右上→上→左上→左→左下→右下 */
-    val items: List<RingItem> = listOf(
+    /**
+     * 从正右开始逆时针：右→右上→上→左上→左→左下→右下。
+     * 收藏项按当前歌曲是否已收藏切换图标与颜色（空心灰 / 实心红），
+     * 没在播放任何歌时置灰（点了也没意义）。
+     */
+    fun itemsOf(favorited: Boolean, hasTrack: Boolean): List<RingItem> = listOf(
         RingItem(NEXT, "下一曲", Icons.Default.KeyboardArrowRight, angle = deg(0.0)),
         RingItem(RECOGNIZE_SYSTEM, "识曲·内", Icons.Default.Search, accent = Color(0xFF6EE7F9), angle = deg(50.0)),
         RingItem(RECOGNIZE_MIC, "识曲·外", Icons.Default.Search, accent = Color(0xFFFCD34D), angle = deg(130.0)),
         RingItem(PREV, "上一曲", Icons.Default.KeyboardArrowLeft, angle = deg(180.0)),
-        RingItem(FAVORITE, "收藏", Icons.Default.Favorite, accent = Color(0xFFF87171), angle = deg(230.0)),
+        RingItem(
+            FAVORITE,
+            if (favorited) "已收藏" else "收藏",
+            if (favorited) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+            accent = when {
+                !hasTrack -> Color.White.copy(alpha = 0.3f)
+                favorited -> Color(0xFFF87171)
+                else -> Color.White
+            },
+            angle = deg(230.0)
+        ),
         RingItem(OPEN_APP, "进入软件", Icons.Default.Menu, angle = deg(310.0)),
         RingItem(CLOSE, "关闭", Icons.Default.Star, accent = Color(0xFF94A3B8), angle = deg(270.0), radiusScale = 0.84f),
     )
@@ -110,19 +125,34 @@ fun BubbleRingMenu(
     centerX: Float,
     centerY: Float,
     isPlaying: Boolean,
+    favorited: Boolean = false,
+    hasTrack: Boolean = false,
     onAction: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
     val config = LocalConfiguration.current
+    // 用 Configuration 的宽高（dp）折算像素：覆盖层是全屏 MATCH_PARENT，和它一致
     val screenW = with(density) { config.screenWidthDp.dp.toPx() }
     val screenH = with(density) { config.screenHeightDp.dp.toPx() }
 
-    // 圆心距四条边的最小余量，决定能张多大
-    val room = min(min(centerX, screenW - centerX), min(centerY, screenH - centerY))
-    val baseRadius = with(density) { 110.dp.toPx() }.coerceAtMost((room - 8f).coerceAtLeast(90f))
     val itemSize = with(density) { 54.dp.toPx() }
     val centerSize = with(density) { 64.dp.toPx() }
+    // 理想半径：菜单该有的样子，不因贴边而缩水
+    val idealRadius = with(density) { 108.dp.toPx() }
+    // 半径最多能多大：受屏幕短边限制（留出图标半径 + 边距）
+    val halfItem = itemSize / 2f
+    val maxRadius = min(screenW, screenH) / 2f - halfItem - with(density) { 12.dp.toPx() }
+    val baseRadius = idealRadius.coerceAtMost(maxRadius)
+
+    /**
+     * 关键：贴边时**不缩半径**，而是把整个圆心往屏幕内侧平移。
+     * 早期版本用「圆心到最近边的距离」当半径，悬浮球放在右边时半径只剩 161px、
+     * 比图标还小，于是所有按钮挤成一团。
+     */
+    val margin = baseRadius + halfItem + with(density) { 8.dp.toPx() }
+    val cx = centerX.coerceIn(margin, (screenW - margin).coerceAtLeast(margin))
+    val cy = centerY.coerceIn(margin, (screenH - margin).coerceAtLeast(margin))
 
     val appear = remember { Animatable(0f) }
     var closing by remember { mutableStateOf(false) }
@@ -146,10 +176,10 @@ fun BubbleRingMenu(
                 if (!closing) onDismiss()
             }
     ) {
-        BubbleRingItems.items.forEach { item ->
+        BubbleRingItems.itemsOf(favorited = favorited, hasTrack = hasTrack).forEach { item ->
             val r = baseRadius * item.radiusScale
-            val px = centerX + (cos(item.angle) * r).toFloat() - itemSize / 2
-            val py = centerY - (sin(item.angle) * r).toFloat() - itemSize / 2
+            val px = cx + (cos(item.angle) * r).toFloat() - itemSize / 2
+            val py = cy - (sin(item.angle) * r).toFloat() - itemSize / 2
             RingButton(
                 item = item,
                 sizePx = itemSize,
@@ -163,8 +193,8 @@ fun BubbleRingMenu(
             modifier = Modifier
                 .offset {
                     androidx.compose.ui.unit.IntOffset(
-                        (centerX - centerSize / 2).toInt(),
-                        (centerY - centerSize / 2).toInt()
+                        (cx - centerSize / 2).toInt(),
+                        (cy - centerSize / 2).toInt()
                     )
                 }
                 .size(with(density) { 64.dp })

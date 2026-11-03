@@ -429,6 +429,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             playerController.isBuffering.collect { isBuffering = it }
         }
+        // 悬浮球环形菜单：同步「当前歌是否已收藏 / 是否真的在放歌」
+        viewModelScope.launch {
+            favoriteTracks.collect { favs ->
+                val cur = currentTrack
+                com.example.helloworld.bubble.BubbleBus.isFavorited =
+                    cur.id != PlaceholderTrack.id && favs.any { it.id == cur.id }
+            }
+        }
+        viewModelScope.launch {
+            playerController.currentMediaId.collect { mediaId ->
+                com.example.helloworld.bubble.BubbleBus.hasTrack = mediaId != null
+            }
+        }
         viewModelScope.launch {
             playerController.positionMs.collect { pos ->
                 playbackPositionMs = pos
@@ -448,6 +461,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 sleepTimer.onMediaChanged(mediaId)
                 findTrack(mediaId)?.let {
                     currentTrack = it
+                    // 切歌后立刻刷新悬浮球收藏态（否则红心会停在上首歌的状态）
+                    com.example.helloworld.bubble.BubbleBus.isFavorited =
+                        favoriteTracks.value.any { fav -> fav.id == it.id }
                     prefetchLyrics(it)
                     // 一起听：自动切到下一首时立即广播（对方不等 3 秒轮询）
                     if (listenHosting && !applyingListenState) {
@@ -885,6 +901,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 开关悬浮球：属性自带同签名 setter，方法必须换名，否则 JVM 签名冲突 */
     var bubbleEnabled by mutableStateOf(false)
 
+    /**
+     * 悬浮球默认常驻：登录后自动拉起（有悬浮窗权限才起，否则等用户去设置里开）。
+     * 开关状态持久化，用户主动关掉就不再自动起。
+     */
+    fun autoStartBubble() {
+        if (bubbleEnabled) return
+        if (!android.provider.Settings.canDrawOverlays(app)) return
+        toggleBubble(true)
+    }
+
     fun toggleBubble(enabled: Boolean) {
         if (enabled) {
             val species = pets.value.values.firstOrNull()?.species ?: "default"
@@ -893,6 +919,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             BubbleService.stop(app)
         }
         bubbleEnabled = enabled
+        app.getSharedPreferences("yinhe_bubble", android.content.Context.MODE_PRIVATE)
+            .edit().putBoolean("enabled", enabled).apply()
     }
 
     /** 悬浮球菜单命令（YinHeApp 收集后转发到这里） */

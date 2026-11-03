@@ -46,7 +46,11 @@ private data class PermItem(
 )
 
 @Composable
-fun PermissionSection(context: Context) {
+fun PermissionSection(
+    context: Context,
+    bubbleEnabled: Boolean = false,
+    onToggleBubble: (Boolean) -> Unit = {}
+) {
     // 从系统设置页返回后要重新检查，用一个自增计数触发重算
     var refresh by remember { mutableIntStateOf(0) }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -62,6 +66,35 @@ fun PermissionSection(context: Context) {
 
     val items = remember(refresh) { buildPermItems(context) { refresh++ } }
     val missing = items.filterNot { it.granted }
+
+    // 悬浮球总开关：放这里而不是藏在识曲页（识曲页本身要从悬浮球菜单进，那是死循环）
+    val overlayGranted = items.firstOrNull()?.granted == true
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("桌面悬浮球", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Text(
+                if (!overlayGranted) "先开启「悬浮在其他应用上层」权限"
+                else if (bubbleEnabled) "已常驻桌面：单击互动，长按打开环形菜单"
+                else "悬浮球已关闭，开启后小精灵常驻桌面",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+        androidx.compose.material3.Switch(
+            checked = bubbleEnabled && overlayGranted,
+            enabled = overlayGranted,
+            onCheckedChange = onToggleBubble
+        )
+    }
 
     Row(
         modifier = Modifier
