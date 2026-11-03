@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,8 +7,20 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
-val serverApiBaseUrl = providers.gradleProperty("serverApiBaseUrl").getOrElse("https://jvkit.cn/music/api/")
-val serverOrigin = providers.gradleProperty("serverOrigin").getOrElse("https://jvkit.cn/music/")
+// 服务端地址优先级：命令行 -P > gradle.local.properties（本机调试，已 gitignore）> 这里的线上默认。
+// 因为 gradle.local.properties 不是 Gradle 的默认配置文件，不会被自动加载，
+// 所以这里的默认值就是发版真实使用的地址，不会出现“本机调试地址被打进发行包”的情况。
+val localProps = Properties()
+val localPropsFile = rootProject.file("gradle.local.properties")
+if (localPropsFile.exists()) localPropsFile.inputStream().use { localProps.load(it) }
+
+fun serverProp(cliKey: String, fallback: String): String =
+    (if (project.hasProperty(cliKey)) project.property(cliKey).toString() else null)
+        ?: localProps.getProperty(cliKey)
+        ?: fallback
+
+val serverApiBaseUrl = serverProp("serverApiBaseUrl", "https://jvkit.cn/music/api/")
+val serverOrigin = serverProp("serverOrigin", "https://jvkit.cn/music/")
 
 android {
     namespace = "com.example.helloworld"

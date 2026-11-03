@@ -9,8 +9,14 @@ Compose 单 Activity 架构，音乐服务器是隔壁 `music_web`（接口前�
 ./gradlew.bat assembleDebug            # 构建（daemon 模式，--no-daemon 在这台 16G 机器上必 OOM）
 ```
 
-- **服务器地址在 `gradle.properties` 的 `serverApiBaseUrl/serverOrigin`**，构建时打进 BuildConfig。
-  调试本机服务 = `http://192.168.2.16:8001/api/`，线上 = `https://jvkit.cn/music/api/`。
+- **服务器地址不在 `gradle.properties`**（2026-11 修）：优先级是
+  命令行 `-P` > `gradle.local.properties`（已 gitignore，本机调试用）> `app/build.gradle.kts` 里的线上默认值。
+  历史坑：以前把调试地址 `http://192.168.2.16:8001/api/` 写在受版本管理的 `gradle.properties`，
+  直接 build 就把局域网地址发给了全网用户，装上去连不上服务。
+  本机要连调试服务就写 `gradle.local.properties`：
+  `serverApiBaseUrl=http://192.168.2.16:8001/api/` / `serverOrigin=http://192.168.2.16:8001/`。
+  **发版前务必确认** BuildConfig 里是 `https://jvkit.cn/music/api/`：
+  `grep SERVER_API_BASE app/build/generated/source/buildConfig/release/*/BuildConfig.java`。
   注意：SettingsRepository 的 SharedPreferences 优先于 BuildConfig（用户改过设置就一直记着）。
 - 发布：apk 传服务器 `/home/ubuntu/www/download/music/app/yinhe-music.apk`，
   直链 https://jvkit.cn/download/music/app/yinhe-music.apk；更新文案写线上
