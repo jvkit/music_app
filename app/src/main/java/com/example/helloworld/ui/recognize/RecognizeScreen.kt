@@ -83,7 +83,10 @@ fun RecognizeScreen(viewModel: MainViewModel) {
     val projectionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
+        com.example.helloworld.playback.YinheLogger.log(
+            "识曲", "投影授权返回 code=${result.resultCode} data=${result.data != null}"
+        )
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             viewModel.startSystemRecognize(result.data)
         } else {
             viewModel.resetRecognize()
@@ -103,11 +106,7 @@ fun RecognizeScreen(viewModel: MainViewModel) {
 
     fun requestSystem() {
         if (!AudioCaptures.canCaptureSystemAudio()) return
-        // 已经授权过就直接开录，本次不再弹「共享屏幕」
-        if (viewModel.hasSystemCaptureSession()) {
-            viewModel.startSystemRecognize(null)
-            return
-        }
+        // 每次都重新授权：Android 14+ 的 token 一次性，复用必失败
         val manager = context.getSystemService(MediaProjectionManager::class.java)
         projectionLauncher.launch(manager.createScreenCaptureIntent())
     }

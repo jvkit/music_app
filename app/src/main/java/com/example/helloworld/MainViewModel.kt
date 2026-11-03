@@ -835,22 +835,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 系统内录识曲（data = 屏幕捕获授权返回的 Intent） */
     /**
-     * 缓存的投影会话。Android 的「系统内录」必须经 MediaProjection（AudioPlaybackCapture 的唯一构造入口），
-     * 但**不必每次识别都弹一次共享屏幕**：授权一次后把会话留着反复建 AudioRecord 即可，
-     * 只有会话被 stop/系统回收时才需要重新授权。
+     * 系统内录识曲（data = 屏幕捕获授权返回的 Intent）。
      *
-     * 注意 Android 14+ 对 MediaProjection 有额外限制（每次 getMediaProjection 同一 token 只能用一次），
-     * 所以这里同时缓存返回的 Intent，失效时用缓存的 Intent 重连，仍失败才回到用户重新授权。
+     * Android 的「系统内录」必须经 MediaProjection（AudioPlaybackCapture 的唯一构造入口），
+     * 而 Android 14+ 把 token 收得很紧：会话一旦被停止/回收，同一个 token 永久失效。
+     * 实测在小米/Redmi 上缓存复用必然拿到 null，所以改成**每次识别都重新授权 + 用完即释放**，
+     * 稳比省一次弹窗重要。
      */
-    private var cachedProjection: android.media.projection.MediaProjection? = null
-    private var cachedProjectionIntent: android.content.Intent? = null
 
-    /** 投影是否还可用 */
-    fun hasSystemCaptureSession(): Boolean = cachedProjection != null
+    /** 每次都走新授权，不存在可复用的会话 */
+    fun hasSystemCaptureSession(): Boolean = false
 
     fun startSystemRecognize(projectionData: android.content.Intent?) {
+        // 诊断落盘：内录链路问题难复现，把关键节点记下来，便于事后读 shared_prefs 定位
+        fun diag(msg: String) {
+            com.example.helloworld.playback.YinheLogger.log("识曲", msg)
+            runCatching {
+                val prefs = app.getSharedPreferences("yinhe_recognize_diag", android.content.Context.MODE_PRIVATE)
+                val prev = prefs.getString("log", "").orEmpty()
+                val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                    .format(java.util.Date())
+                prefs.edit().putString("log", (prev + "\n$ts $msg").takeLast(3000)).apply()
+            }
+        }
+        diag("startSystemRecognize data=${projectionData != null}")
         if (!AudioCaptures.canCaptureSystemAudio()) {
             recognizePhase = "done"
             recognizeError = "系统内录需要 Android 10 及以上"
@@ -859,40 +868,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val manager = app.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE)
             as android.media.projection.MediaProjectionManager
 
-        // 优先复用已有会话；没有再用新授权（或上次缓存）的数据建一个
-        var projection = cachedProjection
-        if (projection == null) {
-            val data = projectionData ?: cachedProjectionIntent
-            if (data == null) {
-                recognizePhase = "done"
-                recognizeError = "需要先授权一次系统音频捕获"
-                return
-            }
-            projection = runCatching {
-                manager.getMediaProjection(android.app.Activity.RESULT_OK, data)
-            }.onFailure {
-                com.example.helloworld.playback.YinheLogger.log(
-                    "识曲", "getMediaProjection 失败：${it::class.simpleName} ${it.message}"
-                )
-            }.getOrNull()
-            if (projection == null) {
-                recognizePhase = "done"
-                recognizeError = "没能建立音频捕获会话，请重新授权"
-                // 缓存失效，清掉让 UI 重新要授权
-                cachedProjectionIntent = null
-                cachedProjection = null
-                return
-            }
-            // Android 14+ 硬性要求：拿到 MediaProjection 后必须**立刻**注册 Callback，
-            // 否则后续 AudioRecord 构建会被系统拒绝。旧写法先存缓存后注册，等于顺序颠倒。
-            projection.registerCallback(object : android.media.projection.MediaProjection.Callback() {
-                override fun onStop() {
-                    cachedProjection = null
-                }
-            }, android.os.Handler(android.os.Looper.getMainLooper()))
-            cachedProjection = projection
-            cachedProjectionIntent = data
+        // 每次识别都用**本次新授权**的 data 建会话，不复用旧 token。
+        // Android 14+ 对 MediaProjection token 收得很紧：会话被系统回收后同一 token 永久失效，
+        // 复用反而必然失败（实测小米/Redmi 上反复返回 null）。
+        val data = projectionData
+        if (data == null) {
+            diag("没有授权 data（应重新走 createScreenCaptureIntent）")
+            recognizePhase = "done"
+            recognizeError = "需要先授权系统音频捕获"
+            return
         }
+        val projection = runCatching {
+            manager.getMediaProjection(android.app.Activity.RESULT_OK, data)
+        }.onFailure {
+            diag("getMediaProjection 抛异常 ${it::class.simpleName}: ${it.message}")
+        }.getOrNull()
+        if (projection == null) {
+            diag("getMediaProjection 返回 null")
+            recognizePhase = "done"
+            recognizeError = "没能建立音频捕获会话，请重新授权"
+            return
+        }
+        diag("getMediaProjection 成功")
+        // Android 14+ 要求：拿到后必须**立刻**注册 Callback，否则后续 AudioRecord 会被系统拒绝
+        projection.registerCallback(object : android.media.projection.MediaProjection.Callback() {
+            override fun onStop() {}
+        }, android.os.Handler(android.os.Looper.getMainLooper()))
 
         val gen = ++recognizeGen
         recognizePhase = "recording"
@@ -908,12 +909,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 } }
             }
+            // 本次会话用完即释放：token 一次性，留着也没法复用
+            runCatching { session.stop() }
             if (gen != recognizeGen) return@launch
             val wav = result.getOrNull()
             if (wav == null) {
                 val why = result.exceptionOrNull()?.let { "${it::class.simpleName}: ${it.message}" }
                     ?: "AudioRecord 初始化失败（设备不支持内录，或该声音被源应用禁止捕获）"
-                com.example.helloworld.playback.YinheLogger.log("识曲", "系统内录失败：$why")
+                diag("系统内录失败：$why")
                 withContext(Dispatchers.Main) {
                     recognizePhase = "done"
                     recognizeError = "系统内录失败：$why"
@@ -922,13 +925,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             // 全静音检测：源应用设了 ALLOW_CAPTURE_BY_NONE 时，能录但全是 0
             if (AudioCaptures.isSilent(wav)) {
-                com.example.helloworld.playback.YinheLogger.log("识曲", "系统内录录到全静音，疑似源应用禁止捕获")
+                diag("录到全静音，疑似源应用禁止捕获")
                 withContext(Dispatchers.Main) {
                     recognizePhase = "done"
                     recognizeError = "录到的全是静音——可能是对方应用禁止了内录，改用麦克风识曲试试"
                 }
                 return@launch
             }
+            diag("录音完成 ${wav.size} 字节，提交识别")
             submitRecognize(wav, gen)
         }
     }
